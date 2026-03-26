@@ -135,7 +135,10 @@ function containsSessionEndMarker(text: string | null | undefined): boolean {
   return Boolean(text && text.includes(SESSION_END_MARKER));
 }
 
-function normalizeContext(body: ChatRequestBody):
+function normalizeContext(
+  body: ChatRequestBody,
+  headerSessionId: string = '',
+):
   | {
       sessionId?: string;
       ledgerId?: string;
@@ -147,7 +150,11 @@ function normalizeContext(body: ChatRequestBody):
   const context = body.context || {};
 
   const sessionId = String(
-    body.mcp_session_id ?? context.mcp_session_id ?? context.session_id ?? '',
+    body.mcp_session_id ??
+      context.mcp_session_id ??
+      context.session_id ??
+      headerSessionId ??
+      '',
   ).trim();
 
   const rawLedgerId = body.ledger_id ?? context.ledger_id;
@@ -248,7 +255,10 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
     const { servers: mcpServers, warnings: mcpWarnings } = validateMcpServers(
       body.mcp_servers,
     );
-    const mcpContext = normalizeContext(body);
+    const mcpContext = normalizeContext(
+      body,
+      req.header('x-mcp-session-id') || '',
+    );
 
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
