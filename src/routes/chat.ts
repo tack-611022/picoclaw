@@ -135,9 +135,7 @@ function containsSessionEndMarker(text: string | null | undefined): boolean {
   return Boolean(text && text.includes(SESSION_END_MARKER));
 }
 
-function normalizeContext(
-  body: ChatRequestBody,
-):
+function normalizeContext(body: ChatRequestBody):
   | {
       sessionId?: string;
       ledgerId?: string;
