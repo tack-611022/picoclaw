@@ -1,0 +1,2 @@
+./scripts/sync-version-badge.sh
+npm run format:fix

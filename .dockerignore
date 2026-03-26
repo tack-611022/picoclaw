@@ -1,0 +1,16 @@
+node_modules
+dist
+dev-data
+.env
+.git
+.github
+.claude
+.nanoclaw
+docs
+assets
+skills-engine
+groups
+repo-tokens
+agents-sdk-docs
+*.md
+!entrypoint.sh

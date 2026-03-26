@@ -1,0 +1,1857 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "PicoClaw Serverless API",
+    "version": "1.0.0",
+    "description": "HTTP API for PicoClaw (serverless-oriented runtime).\n\nNotes:\n- All endpoints except `/health` require Bearer token authentication when `API_TOKEN` is set. When `API_TOKEN` is unset, authentication is disabled (auth-free mode for local/trusted-network deployments).\n- `POST /chat` supports both JSON response mode and SSE streaming mode.\n- Memory and conversation history are persisted via mounted storage and reused across separate requests.\n- Scheduled tasks are externally triggered by calling `/task/check`.\n- `POST /control/stop` can be used to request graceful save-and-exit.\n- Every response includes an `X-Request-ID` header for log correlation. If the caller sends an `X-Request-ID` header, the same value is echoed back; otherwise a new `req-<UUID>` is generated.\n- Every response includes `X-Build-Version` and `X-Build-Commit` headers for identifying the running build.\n"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:9000",
+      "description": "Local development"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "System"
+    },
+    {
+      "name": "Chat"
+    },
+    {
+      "name": "Task"
+    },
+    {
+      "name": "Admin"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Health check",
+        "description": "Returns service health and runtime execution limit.",
+        "operationId": "getHealth",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Service healthy",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/X-Request-ID"
+              },
+              "X-Build-Version": {
+                "$ref": "#/components/headers/X-Build-Version"
+              },
+              "X-Build-Commit": {
+                "$ref": "#/components/headers/X-Build-Commit"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                },
+                "examples": {
+                  "ok": {
+                    "value": {
+                      "status": "ok",
+                      "version": "1.2.16",
+                      "commit": "abc1234",
+                      "build_time": "2026-03-12T10:00:00Z",
+                      "max_execution_ms": 300000,
+                      "database": {
+                        "ok": true,
+                        "conversations": 5,
+                        "tasks": 2
+                      },
+                      "volumes": {
+                        "memory": true,
+                        "skills": true,
+                        "sessions": true,
+                        "store": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Start or continue a conversation",
+        "description": "Sends a user message to the agent.\n\nBehavior:\n- Without `conversation_id`: creates a new conversation.\n- With `conversation_id`: resumes an existing conversation.\n- With `stream=true`: returns `text/event-stream` (SSE).\n",
+        "operationId": "postChat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              },
+              "examples": {
+                "newConversation": {
+                  "value": {
+                    "message": "\u8bf7\u53ea\u56de\u7b54\u6570\u5b57\uff1a1+1 \u7b49\u4e8e\u51e0\uff1f",
+                    "sender": "verify",
+                    "sender_name": "Verifier",
+                    "stream": false
+                  }
+                },
+                "continueConversation": {
+                  "value": {
+                    "message": "\u4e0a\u4e00\u8f6e\u4f60\u56de\u7b54\u4e86\u4ec0\u4e48\uff1f\u53ea\u56de\u7b54\u5185\u5bb9\u3002",
+                    "conversation_id": "conv-0df6aee0-86e1-45ac-b33b-c13086b72c36",
+                    "sender": "verify",
+                    "sender_name": "Verifier",
+                    "stream": false
+                  }
+                },
+                "streamMode": {
+                  "value": {
+                    "message": "\u9010\u6b65\u601d\u8003\u540e\u7ed9\u7ed3\u8bba",
+                    "sender": "verify",
+                    "sender_name": "Verifier",
+                    "stream": true,
+                    "max_execution_ms": 120000
+                  }
+                },
+                "withMcpServer": {
+                  "value": {
+                    "message": "\u8bf7\u5e2e\u6211\u5206\u6790\u4e00\u4e0b\u6700\u8fd1\u4e00\u5468\u7684\u652f\u51fa\u60c5\u51b5",
+                    "mcp_servers": {
+                      "finance": {
+                        "type": "http",
+                        "url": "http://example.com/mcp-server"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Chat processed successfully (JSON or SSE stream)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResponse"
+                },
+                "examples": {
+                  "success": {
+                    "value": {
+                      "status": "success",
+                      "conversation_id": "conv-0df6aee0-86e1-45ac-b33b-c13086b72c36",
+                      "message_id": "msg-3aaf5d3f-a17b-4e8e-bec3-a33df4c9af86",
+                      "result": "2",
+                      "model": "claude-sonnet-4-6",
+                      "session_id": "3e49773a-b4a6-4c53-8cd9-b3f96c5377e3",
+                      "duration_ms": 6701,
+                      "error": null,
+                      "outbound_messages": [],
+                      "session_end_marker": "[[PICOCLAW_SESSION_END]]",
+                      "session_end_marker_detected": false
+                    }
+                  },
+                  "timeout": {
+                    "value": {
+                      "status": "timeout",
+                      "conversation_id": "conv-aaa",
+                      "message_id": "msg-bbb",
+                      "result": "\u5df2\u751f\u6210\u90e8\u5206\u7ed3\u679c",
+                      "session_id": "session-xxx",
+                      "duration_ms": 120000,
+                      "error": "Execution aborted after 120000ms. Use conversation_id to continue.",
+                      "outbound_messages": [],
+                      "session_end_marker": "[[PICOCLAW_SESSION_END]]",
+                      "session_end_marker_detected": false
+                    }
+                  }
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "examples": {
+                  "sse": {
+                    "value": "event: start\ndata: {\"conversation_id\":\"conv-123\",\"message_id\":\"msg-123\"}\n\nevent: thinking\ndata: {\"text\":\"Let me reason about this...\"}\n\nevent: tool_use\ndata: {\"tool\":\"WebSearch\",\"input\":{\"query\":\"example\"}}\n\nevent: chunk\ndata: {\"text\":\"partial output\"}\n\nevent: done\ndata: {\"status\":\"success\",\"conversation_id\":\"conv-123\",\"message_id\":\"msg-123\",\"result\":\"final result\",\"session_id\":\"session-123\",\"duration_ms\":3210,\"error\":null,\"outbound_messages\":[],\"session_end_marker\":\"[[PICOCLAW_SESSION_END]]\",\"session_end_marker_detected\":true}\n"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "examples": {
+                  "missingMessage": {
+                    "value": {
+                      "error": "message is required"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Conversation ID not found when resuming",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "examples": {
+                  "notFound": {
+                    "value": {
+                      "error": "conversation_id not found: conv-missing"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conversation is currently processing another request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationBusyError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatInternalErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "List all conversations",
+        "operationId": "listConversations",
+        "responses": {
+          "200": {
+            "description": "Conversation list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/chat/{conversation_id}": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Get conversation state",
+        "operationId": "getConversation",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ConversationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Conversation state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationStatusResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid path parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Conversation not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Delete a conversation",
+        "description": "Deletes a conversation and all related data (messages, outbound messages, tasks).\nReturns 409 if the conversation is currently running.\n",
+        "operationId": "deleteConversation",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ConversationId"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Conversation deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Conversation not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conversation is currently running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationBusyError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat/{conversation_id}/messages": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Get conversation messages",
+        "operationId": "getConversationMessages",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ConversationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Message list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationMessagesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Conversation not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/task": {
+      "post": {
+        "tags": [
+          "Task"
+        ],
+        "summary": "Create a scheduled task",
+        "operationId": "createTask",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskRequest"
+              },
+              "examples": {
+                "once": {
+                  "value": {
+                    "id": "verify-task-once",
+                    "prompt": "\u8bf7\u53ea\u56de\u590d ok",
+                    "schedule_type": "once",
+                    "schedule_value": "2026-03-07T00:00:00",
+                    "context_mode": "isolated"
+                  }
+                },
+                "interval": {
+                  "value": {
+                    "prompt": "\u6bcf 5 \u5206\u949f\u8f93\u51fa\u4e00\u6b21\u72b6\u6001",
+                    "schedule_type": "interval",
+                    "schedule_value": "300000",
+                    "context_mode": "isolated"
+                  }
+                },
+                "cron": {
+                  "value": {
+                    "prompt": "\u751f\u6210\u6bcf\u65e5\u6458\u8981",
+                    "schedule_type": "cron",
+                    "schedule_value": "0 9 * * 1-5",
+                    "context_mode": "group",
+                    "conversation_id": "conv-123"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Task created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid task payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/tasks": {
+      "get": {
+        "tags": [
+          "Task"
+        ],
+        "summary": "List tasks",
+        "operationId": "listTasks",
+        "responses": {
+          "200": {
+            "description": "Task list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/task/{task_id}": {
+      "put": {
+        "tags": [
+          "Task"
+        ],
+        "summary": "Update a task",
+        "operationId": "updateTask",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TaskId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTaskRequest"
+              },
+              "examples": {
+                "updateSchedule": {
+                  "value": {
+                    "schedule_type": "interval",
+                    "schedule_value": "600000"
+                  }
+                },
+                "pause": {
+                  "value": {
+                    "status": "paused"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Task not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Task"
+        ],
+        "summary": "Delete a task",
+        "operationId": "deleteTask",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TaskId"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Task deleted"
+          },
+          "400": {
+            "description": "Invalid path parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Task not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/task/trigger": {
+      "post": {
+        "tags": [
+          "Task"
+        ],
+        "summary": "Trigger one specific task immediately",
+        "operationId": "triggerTask",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskTriggerRequest"
+              },
+              "examples": {
+                "trigger": {
+                  "value": {
+                    "task_id": "verify-task-once"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Task execution result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Task not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task's conversation is currently processing another request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationBusyError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal trigger failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/task/check": {
+      "post": {
+        "tags": [
+          "Task"
+        ],
+        "summary": "Check due tasks and execute one",
+        "description": "Fetches due tasks and executes only the first one.\nIf no due tasks exist, returns checked=0.\n",
+        "operationId": "checkDueTasks",
+        "responses": {
+          "200": {
+            "description": "No due task or one task execution completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/TaskCheckNoDueResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskCheckDueResponse"
+                    }
+                  ]
+                },
+                "examples": {
+                  "noDue": {
+                    "value": {
+                      "checked": 0,
+                      "message": "No due tasks"
+                    }
+                  },
+                  "dueExecuted": {
+                    "value": {
+                      "checked": 3,
+                      "executed": {
+                        "status": "success",
+                        "task_id": "task-1",
+                        "result": "ok",
+                        "duration_ms": 4874,
+                        "next_run": null,
+                        "error": null
+                      },
+                      "remaining": 2
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "description": "Unexpected runtime failure while checking/executing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCheckErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/reload-skills": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Reload skills from all tiers",
+        "description": "Re-syncs skills from built-in, org, and user directories to `.claude/skills/`.\nReturns the updated skills summary.\n",
+        "operationId": "reloadSkills",
+        "responses": {
+          "200": {
+            "description": "Skills reloaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillsReloadResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/admin/skills": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Get skills summary",
+        "description": "Returns the current skills from all three tiers.",
+        "operationId": "getSkills",
+        "responses": {
+          "200": {
+            "description": "Skills summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillsSummaryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/control/stop": {
+      "post": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Trigger graceful stop and exit",
+        "description": "Requests the main process to persist data and exit gracefully.\nThis endpoint is useful when the caller detects a session-end marker and\nwants to terminate the current runtime instance.\n",
+        "operationId": "stopRuntime",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StopRequest"
+              },
+              "examples": {
+                "stop": {
+                  "value": {
+                    "reason": "end-of-session"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stop accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "Stop callback not configured in current runtime",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "API_TOKEN"
+      }
+    },
+    "parameters": {
+      "ConversationId": {
+        "name": "conversation_id",
+        "in": "path",
+        "required": true,
+        "description": "Conversation ID",
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "TaskId": {
+        "name": "task_id",
+        "in": "path",
+        "required": true,
+        "description": "Task ID",
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "headers": {
+      "X-Request-ID": {
+        "description": "Request tracking identifier for log correlation.\nEchoes the caller-provided `X-Request-ID` header, or a generated `req-<UUID>` if none was sent.\nPresent on every response, including error and unauthenticated responses.\n",
+        "schema": {
+          "type": "string",
+          "example": "req-a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        }
+      },
+      "X-Build-Version": {
+        "description": "Application version from `package.json`, injected at Docker build time.\nPresent on every response.\n",
+        "schema": {
+          "type": "string",
+          "example": "1.2.16"
+        }
+      },
+      "X-Build-Commit": {
+        "description": "Short git commit hash of the build, injected at Docker build time.\nPresent on every response.\n",
+        "schema": {
+          "type": "string",
+          "example": "abc1234"
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Unauthorized (missing or invalid bearer token)",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/X-Request-ID"
+          },
+          "X-Build-Version": {
+            "$ref": "#/components/headers/X-Build-Version"
+          },
+          "X-Build-Commit": {
+            "$ref": "#/components/headers/X-Build-Commit"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiError"
+            },
+            "examples": {
+              "unauthorized": {
+                "value": {
+                  "error": "Unauthorized"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ApiError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "commit",
+          "build_time",
+          "max_execution_ms",
+          "database",
+          "volumes"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded"
+            ]
+          },
+          "version": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string",
+            "description": "Short git commit hash of the build."
+          },
+          "build_time": {
+            "type": "string",
+            "description": "ISO 8601 UTC timestamp of when the image was built."
+          },
+          "max_execution_ms": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "database": {
+            "type": "object",
+            "required": [
+              "ok",
+              "conversations",
+              "tasks"
+            ],
+            "properties": {
+              "ok": {
+                "type": "boolean"
+              },
+              "conversations": {
+                "type": "integer"
+              },
+              "tasks": {
+                "type": "integer"
+              }
+            }
+          },
+          "volumes": {
+            "type": "object",
+            "required": [
+              "memory",
+              "skills",
+              "sessions",
+              "store"
+            ],
+            "properties": {
+              "memory": {
+                "type": "boolean"
+              },
+              "skills": {
+                "type": "boolean"
+              },
+              "sessions": {
+                "type": "boolean"
+              },
+              "store": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "ChatRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversation_id": {
+            "type": "string",
+            "description": "Existing conversation ID for multi-turn continuation."
+          },
+          "sender": {
+            "type": "string",
+            "description": "Sender identifier.",
+            "default": "user"
+          },
+          "sender_name": {
+            "type": "string",
+            "description": "Sender display name."
+          },
+          "stream": {
+            "type": "boolean",
+            "default": false,
+            "description": "Return SSE stream when true."
+          },
+          "max_execution_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Request-level timeout in milliseconds.\nEffective timeout is min(max_execution_ms, env MAX_EXECUTION_MS).\n"
+          },
+          "thinking": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable extended thinking. When true, the model produces thinking\ncontent before its final response. Requires stream=true to see\nthinking events in SSE output.\n"
+          },
+          "max_thinking_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum tokens for extended thinking. Only used when thinking=true.\nDefault: 10000.\n"
+          },
+          "show_tool_use": {
+            "type": "boolean",
+            "default": false,
+            "description": "Stream tool invocation events. When true and stream=true, SSE\noutput includes 'tool_use' events showing which tools the agent\ncalls and their inputs.\n"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model override for this request. Omit to use the CLI default\n(recommended \u2014 avoids locking to a specific model version).\nAccepts full model IDs (e.g. `claude-opus-4-6`) or short names\n(`opus`, `sonnet`, `haiku`). Precedence: per-request > `CLAUDE_MODEL`\nenv var > CLI default.\n"
+          },
+          "mcp_servers": {
+            "type": "object",
+            "description": "Per-request MCP servers merged with the built-in picoclaw server.\nEach key is a server name; the value defines the transport config.\nSupports stdio, SSE, and HTTP transports (maps to SDK McpServerConfig).\n",
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "url"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "http",
+                        "sse"
+                      ]
+                    },
+                    "url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "headers": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "command"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "stdio"
+                      ]
+                    },
+                    "command": {
+                      "type": "string"
+                    },
+                    "args": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "OutboundMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "conversation_id",
+          "text",
+          "sender",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "sender": {
+            "type": "string",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ChatResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "conversation_id",
+          "message_id",
+          "result",
+          "duration_ms",
+          "outbound_messages",
+          "session_end_marker",
+          "session_end_marker_detected"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "success",
+              "timeout",
+              "error"
+            ]
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string",
+            "nullable": true
+          },
+          "model": {
+            "type": "string",
+            "nullable": true,
+            "description": "Actual model used for this request (from SDK init)."
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "outbound_messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutboundMessage"
+            }
+          },
+          "session_end_marker": {
+            "type": "string",
+            "description": "Marker string that indicates the assistant declared session completion."
+          },
+          "session_end_marker_detected": {
+            "type": "boolean",
+            "description": "True when the marker is found in result or outbound messages."
+          },
+          "usage": {
+            "type": "object",
+            "nullable": true,
+            "description": "Token usage and cost metrics from the agent execution (present when SDK provides data).",
+            "properties": {
+              "inputTokens": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "outputTokens": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "totalCostUsd": {
+                "type": "number",
+                "minimum": 0
+              },
+              "numTurns": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "durationApiMs": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "MCP server validation warnings (reserved names rejected, invalid configs skipped). Only present when issues are detected."
+          }
+        }
+      },
+      "ChatInternalErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "conversation_id",
+          "message_id",
+          "result",
+          "error"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "error"
+            ]
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string",
+            "nullable": true
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "ConversationStatusResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conversation_id",
+          "message_count",
+          "last_activity",
+          "status"
+        ],
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "message_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_activity": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "running"
+            ]
+          }
+        }
+      },
+      "StopRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Optional human-readable stop reason."
+          }
+        }
+      },
+      "StopResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "reason",
+          "message"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "stopping"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "conversation_id",
+          "prompt",
+          "schedule_type",
+          "schedule_value",
+          "context_mode",
+          "next_run",
+          "status",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "schedule_type": {
+            "type": "string",
+            "enum": [
+              "cron",
+              "interval",
+              "once"
+            ]
+          },
+          "schedule_value": {
+            "type": "string"
+          },
+          "context_mode": {
+            "type": "string",
+            "enum": [
+              "group",
+              "isolated"
+            ]
+          },
+          "next_run": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "last_run": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "last_result": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "paused",
+              "completed"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CreateTaskRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "prompt",
+          "schedule_type",
+          "schedule_value"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Optional custom task ID."
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "schedule_type": {
+            "type": "string",
+            "enum": [
+              "cron",
+              "interval",
+              "once"
+            ]
+          },
+          "schedule_value": {
+            "type": "string",
+            "minLength": 1,
+            "description": "- cron: cron expression (TZ-aware)\n- interval: milliseconds string (positive integer)\n- once: local timestamp string without timezone suffix\n"
+          },
+          "context_mode": {
+            "type": "string",
+            "enum": [
+              "group",
+              "isolated"
+            ],
+            "default": "isolated"
+          },
+          "conversation_id": {
+            "type": "string",
+            "description": "Existing conversation ID. Auto-created if omitted."
+          }
+        }
+      },
+      "UpdateTaskRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "schedule_type": {
+            "type": "string",
+            "enum": [
+              "cron",
+              "interval",
+              "once"
+            ]
+          },
+          "schedule_value": {
+            "type": "string",
+            "minLength": 1
+          },
+          "context_mode": {
+            "type": "string",
+            "enum": [
+              "group",
+              "isolated"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "paused",
+              "completed"
+            ]
+          },
+          "conversation_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TaskListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tasks"
+        ],
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Task"
+            }
+          }
+        }
+      },
+      "TaskTriggerRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_id"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "TaskExecutionResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "task_id",
+          "result",
+          "duration_ms",
+          "next_run"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "success",
+              "timeout",
+              "error"
+            ]
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string",
+            "nullable": true
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "next_run": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "TaskCheckNoDueResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "checked",
+          "message"
+        ],
+        "properties": {
+          "checked": {
+            "type": "integer",
+            "enum": [
+              0
+            ]
+          },
+          "message": {
+            "type": "string",
+            "enum": [
+              "No due tasks"
+            ]
+          }
+        }
+      },
+      "TaskCheckDueResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "checked",
+          "executed",
+          "remaining"
+        ],
+        "properties": {
+          "checked": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "executed": {
+            "$ref": "#/components/schemas/TaskExecutionResult"
+          },
+          "remaining": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "TaskCheckErrorExecuted": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_id",
+          "status",
+          "error"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "error"
+            ]
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "TaskCheckErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "checked",
+          "executed",
+          "remaining"
+        ],
+        "properties": {
+          "checked": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "executed": {
+            "$ref": "#/components/schemas/TaskCheckErrorExecuted"
+          },
+          "remaining": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "ConversationListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conversations"
+        ],
+        "properties": {
+          "conversations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationStatusResponse"
+            }
+          }
+        }
+      },
+      "ConversationMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "conversation_id",
+          "role",
+          "content",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant",
+              "system"
+            ]
+          },
+          "sender": {
+            "type": "string",
+            "nullable": true
+          },
+          "sender_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "content": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ConversationMessagesResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conversation_id",
+          "messages"
+        ],
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationMessage"
+            }
+          }
+        }
+      },
+      "ConversationBusyError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error",
+          "conversation_id"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillsSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "builtIn",
+          "org",
+          "user",
+          "effective"
+        ],
+        "properties": {
+          "builtIn": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "org": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "user": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "effective": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SkillsReloadResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "skills"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "reloaded"
+            ]
+          },
+          "skills": {
+            "$ref": "#/components/schemas/SkillsSummary"
+          }
+        }
+      },
+      "SkillsSummaryResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "skills"
+        ],
+        "properties": {
+          "skills": {
+            "$ref": "#/components/schemas/SkillsSummary"
+          }
+        }
+      }
+    }
+  }
+}

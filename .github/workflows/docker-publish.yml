@@ -1,0 +1,81 @@
+# Publish Docker images to GitHub Container Registry (GHCR)
+# - Push to main: builds release tags (latest, x.y.z, x.y.z-commit)
+# - Manual dispatch: builds dev or release tags depending on branch
+
+name: Docker Publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      push_lambda:
+        description: 'Also build and push Lambda variant'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  GHCR_IMAGE: ghcr.io/breakcafe/picoclaw
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "standard_tags=${GHCR_IMAGE}:latest,${GHCR_IMAGE}:${VERSION},${GHCR_IMAGE}:${VERSION}-${COMMIT}" >> "$GITHUB_OUTPUT"
+            echo "lambda_tags=${GHCR_IMAGE}:latest-lambda,${GHCR_IMAGE}:${VERSION}-lambda,${GHCR_IMAGE}:${VERSION}-${COMMIT}-lambda" >> "$GITHUB_OUTPUT"
+          else
+            SLUG=$(echo "${{ github.ref_name }}" | sed 's/[^a-zA-Z0-9]/-/g' | tr 'A-Z' 'a-z')
+            echo "standard_tags=${GHCR_IMAGE}:dev,${GHCR_IMAGE}:dev-${COMMIT},${GHCR_IMAGE}:dev-${SLUG}" >> "$GITHUB_OUTPUT"
+            echo "lambda_tags=${GHCR_IMAGE}:dev-lambda,${GHCR_IMAGE}:dev-${COMMIT}-lambda,${GHCR_IMAGE}:dev-${SLUG}-lambda" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push standard image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.tags.outputs.standard_tags }}
+          build-args: |
+            BUILD_VERSION=${{ steps.tags.outputs.version }}
+            BUILD_COMMIT=${{ steps.tags.outputs.commit }}
+            BUILD_TIME=${{ steps.tags.outputs.build_time }}
+
+      - name: Build and push Lambda image
+        if: github.event_name == 'push' || inputs.push_lambda
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.tags.outputs.lambda_tags }}
+          build-args: |
+            ENABLE_LAMBDA_ADAPTER=true
+            BUILD_VERSION=${{ steps.tags.outputs.version }}
+            BUILD_COMMIT=${{ steps.tags.outputs.commit }}
+            BUILD_TIME=${{ steps.tags.outputs.build_time }}
