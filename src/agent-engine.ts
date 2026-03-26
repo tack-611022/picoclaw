@@ -435,11 +435,6 @@ function createInjectMcpArgsHook(context?: McpRuntimeContext): HookCallback {
     const updatedInput: Record<string, unknown> = { ...originalInput };
     let changed = false;
 
-    if (context.sessionId) {
-      updatedInput.user_id = context.sessionId;
-      changed = true;
-    }
-
     if (context.ledgerId && shouldInjectLedgerId(toolName, originalInput)) {
       if (updatedInput.ledger_id !== context.ledgerId) {
         updatedInput.ledger_id = context.ledgerId;
@@ -475,6 +470,13 @@ function createInjectMcpArgsHook(context?: McpRuntimeContext): HookCallback {
         updatedInput[key] = value;
         changed = true;
       }
+    }
+
+    // Enforce MCP auth source of truth: user_id must always come from sessionId.
+    // This prevents placeholders like "{{user_id}}" in mcp_tool_args from overriding it.
+    if (context.sessionId && updatedInput.user_id !== context.sessionId) {
+      updatedInput.user_id = context.sessionId;
+      changed = true;
     }
 
     if (!changed) {
