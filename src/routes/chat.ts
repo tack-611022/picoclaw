@@ -46,6 +46,17 @@ interface ChatRequestBody {
   show_tool_use?: boolean;
   model?: string;
   mcp_servers?: Record<string, McpServerConfig>;
+  mcp_session_id?: string;
+  ledger_id?: string | number;
+  region?: string;
+  context?: {
+    mcp_session_id?: string;
+    session_id?: string;
+    ledger_id?: string | number;
+    region?: string;
+    mcp_tool_args?: Record<string, unknown>;
+    mcp_tool_args_by_tool?: Record<string, Record<string, unknown>>;
+  };
 }
 
 function getExecutionTimeout(ms?: number): number {
@@ -124,6 +135,67 @@ function containsSessionEndMarker(text: string | null | undefined): boolean {
   return Boolean(text && text.includes(SESSION_END_MARKER));
 }
 
+function normalizeContext(
+  body: ChatRequestBody,
+):
+  | {
+      sessionId?: string;
+      ledgerId?: string;
+      region?: string;
+      mcpToolArgs?: Record<string, unknown>;
+      mcpToolArgsByTool?: Record<string, Record<string, unknown>>;
+    }
+  | undefined {
+  const context = body.context || {};
+
+  const sessionId = String(
+    body.mcp_session_id ?? context.mcp_session_id ?? context.session_id ?? '',
+  ).trim();
+
+  const rawLedgerId = body.ledger_id ?? context.ledger_id;
+  const ledgerId =
+    rawLedgerId === undefined || rawLedgerId === null
+      ? ''
+      : String(rawLedgerId).trim();
+
+  const region = String(body.region ?? context.region ?? '').trim();
+
+  const mcpToolArgs =
+    context.mcp_tool_args &&
+    typeof context.mcp_tool_args === 'object' &&
+    !Array.isArray(context.mcp_tool_args)
+      ? (context.mcp_tool_args as Record<string, unknown>)
+      : undefined;
+
+  const mcpToolArgsByTool =
+    context.mcp_tool_args_by_tool &&
+    typeof context.mcp_tool_args_by_tool === 'object' &&
+    !Array.isArray(context.mcp_tool_args_by_tool)
+      ? (context.mcp_tool_args_by_tool as Record<
+          string,
+          Record<string, unknown>
+        >)
+      : undefined;
+
+  if (
+    !sessionId &&
+    !ledgerId &&
+    !region &&
+    !mcpToolArgs &&
+    !mcpToolArgsByTool
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(ledgerId ? { ledgerId } : {}),
+    ...(region ? { region } : {}),
+    ...(mcpToolArgs ? { mcpToolArgs } : {}),
+    ...(mcpToolArgsByTool ? { mcpToolArgsByTool } : {}),
+  };
+}
+
 export function chatRoutes(agentEngine: AgentRunner): Router {
   const router = Router();
 
@@ -178,6 +250,7 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
     const { servers: mcpServers, warnings: mcpWarnings } = validateMcpServers(
       body.mcp_servers,
     );
+    const mcpContext = normalizeContext(body);
 
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -249,6 +322,7 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
           showToolUse,
           model: body.model?.trim() || undefined,
           mcpServers: mcpServers ?? undefined,
+          mcpContext,
         },
         streamCallbacks,
       );

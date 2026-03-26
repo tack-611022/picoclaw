@@ -612,6 +612,90 @@ describe('http server', () => {
     expect(capturedInput.mcpServers).toBeUndefined();
   });
 
+  it('passes mcpContext from top-level mcp_session_id/ledger_id/region', async () => {
+    let capturedInput: any;
+    const captureEngine: AgentRunner = {
+      async run(input) {
+        capturedInput = input;
+        return {
+          status: 'success',
+          result: 'ok',
+          newSessionId: 'session-ctx-top',
+          lastAssistantUuid: 'uuid-ctx-top',
+        };
+      },
+    };
+    const serverModule = await import('./server.js');
+    const captureApp = serverModule.createServer(captureEngine);
+
+    await request(captureApp)
+      .post('/chat')
+      .set('Authorization', 'Bearer test-token')
+      .send({
+        message: 'context top-level',
+        mcp_session_id: 'SID-123',
+        ledger_id: 86403580,
+        region: 'R1',
+      });
+
+    expect(capturedInput.mcpContext).toEqual({
+      sessionId: 'SID-123',
+      ledgerId: '86403580',
+      region: 'R1',
+    });
+  });
+
+  it('passes mcpContext from context object with tool args', async () => {
+    let capturedInput: any;
+    const captureEngine: AgentRunner = {
+      async run(input) {
+        capturedInput = input;
+        return {
+          status: 'success',
+          result: 'ok',
+          newSessionId: 'session-ctx-object',
+          lastAssistantUuid: 'uuid-ctx-object',
+        };
+      },
+    };
+    const serverModule = await import('./server.js');
+    const captureApp = serverModule.createServer(captureEngine);
+
+    await request(captureApp)
+      .post('/chat')
+      .set('Authorization', 'Bearer test-token')
+      .send({
+        message: 'context object',
+        context: {
+          session_id: 'SID-ctx',
+          ledger_id: '777',
+          region: 'R2',
+          mcp_tool_args: {
+            currency: 'CNY',
+          },
+          mcp_tool_args_by_tool: {
+            query_expenses: {
+              page_no: 1,
+            },
+          },
+        },
+      });
+
+    expect(capturedInput.mcpContext).toEqual({
+      sessionId: 'SID-ctx',
+      ledgerId: '777',
+      region: 'R2',
+      mcpToolArgs: {
+        currency: 'CNY',
+      },
+      mcpToolArgsByTool: {
+        query_expenses: {
+          page_no: 1,
+        },
+      },
+    });
+  });
+
   it('accepts stop request and invokes shutdown callback', async () => {
     const response = await request(app)
       .post('/control/stop')

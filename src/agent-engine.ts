@@ -38,6 +38,23 @@ export type McpServerConfig =
   | { type: 'sse'; url: string; headers?: Record<string, string> }
   | { type: 'http'; url: string; headers?: Record<string, string> };
 
+export interface McpRuntimeContext {
+  /** Business session id used by MCP server auth middleware (maps to arguments.user_id). */
+  sessionId?: string;
+  /** Optional default ledger id injected for ledger-aware MCP tools. */
+  ledgerId?: string;
+  /** Optional region context for MCP tools that support region input. */
+  region?: string;
+  /** Injected into all MCP tool calls (applied after built-in injected keys). */
+  mcpToolArgs?: Record<string, unknown>;
+  /**
+   * Per-tool argument injection.
+   * Key can be full tool name (e.g. mcp__kapi__query_expenses)
+   * or short tool suffix (e.g. query_expenses).
+   */
+  mcpToolArgsByTool?: Record<string, Record<string, unknown>>;
+}
+
 export interface AgentRunInput {
   prompt: string;
   conversationId: string;
@@ -52,6 +69,8 @@ export interface AgentRunInput {
   model?: string;
   /** Per-request MCP servers merged with the built-in picoclaw server. */
   mcpServers?: Record<string, McpServerConfig>;
+  /** Structured context for MCP tool argument injection. */
+  mcpContext?: McpRuntimeContext;
 }
 
 export interface AgentRunOutput {
@@ -338,6 +357,139 @@ function createSanitizeBashHook(): HookCallback {
   };
 }
 
+const LEDGER_AWARE_TOOL_SUFFIXES = new Set([
+  'get_categories',
+  'get_budget_info',
+  'create_record',
+  'query_expenses',
+  'query_incomes',
+  'search_records',
+  'query_record_info',
+  'analyze_expense_categories',
+  'analyze_income_categories',
+  'spending_trend',
+  'compare_budget_vs_actual',
+]);
+
+function getMcpToolSuffix(toolName: string): string {
+  const parts = toolName.split('__');
+  return (parts[parts.length - 1] || '').trim();
+}
+
+function hasOwn(obj: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function shouldInjectLedgerId(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): boolean {
+  if (hasOwn(toolInput, 'ledger_id')) {
+    return true;
+  }
+  return LEDGER_AWARE_TOOL_SUFFIXES.has(getMcpToolSuffix(toolName));
+}
+
+function resolvePerToolArgs(
+  context: McpRuntimeContext,
+  toolName: string,
+): Record<string, unknown> | undefined {
+  const all = context.mcpToolArgsByTool;
+  if (!all) {
+    return undefined;
+  }
+
+  if (all[toolName]) {
+    return all[toolName];
+  }
+
+  const suffix = getMcpToolSuffix(toolName);
+  if (suffix && all[suffix]) {
+    return all[suffix];
+  }
+  return undefined;
+}
+
+function createInjectMcpArgsHook(context?: McpRuntimeContext): HookCallback {
+  return async (input) => {
+    if (!context) {
+      return {};
+    }
+
+    const preToolUse = input as PreToolUseHookInput & {
+      tool_name?: string;
+      tool_input?: unknown;
+    };
+    const toolName = (preToolUse.tool_name || '').trim();
+    if (!toolName.startsWith('mcp__')) {
+      return {};
+    }
+
+    const originalInput =
+      preToolUse.tool_input &&
+      typeof preToolUse.tool_input === 'object' &&
+      !Array.isArray(preToolUse.tool_input)
+        ? (preToolUse.tool_input as Record<string, unknown>)
+        : {};
+
+    const updatedInput: Record<string, unknown> = { ...originalInput };
+    let changed = false;
+
+    if (context.sessionId) {
+      updatedInput.user_id = context.sessionId;
+      changed = true;
+    }
+
+    if (context.ledgerId && shouldInjectLedgerId(toolName, originalInput)) {
+      if (updatedInput.ledger_id !== context.ledgerId) {
+        updatedInput.ledger_id = context.ledgerId;
+        changed = true;
+      }
+    }
+
+    if (context.region && hasOwn(originalInput, 'region')) {
+      if (updatedInput.region !== context.region) {
+        updatedInput.region = context.region;
+        changed = true;
+      }
+    }
+
+    if (context.mcpToolArgs) {
+      for (const [key, value] of Object.entries(context.mcpToolArgs)) {
+        if (value === undefined) {
+          continue;
+        }
+        if (hasOwn(originalInput, key)) {
+          updatedInput[key] = value;
+          changed = true;
+        }
+      }
+    }
+
+    const perToolArgs = resolvePerToolArgs(context, toolName);
+    if (perToolArgs) {
+      for (const [key, value] of Object.entries(perToolArgs)) {
+        if (value === undefined) {
+          continue;
+        }
+        updatedInput[key] = value;
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return {};
+    }
+
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        updatedInput,
+      },
+    };
+  };
+}
+
 function discoverAdditionalDirectories(): string[] {
   if (!fs.existsSync(SKILLS_DIR)) {
     return [];
@@ -536,6 +688,10 @@ export class AgentEngine implements AgentRunner {
               {
                 matcher: 'Bash',
                 hooks: [createSanitizeBashHook()],
+              },
+              {
+                matcher: 'mcp__*',
+                hooks: [createInjectMcpArgsHook(input.mcpContext)],
               },
             ],
           },
