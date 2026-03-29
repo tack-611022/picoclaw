@@ -277,7 +277,7 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
         mcpContext: mcpContext ?? undefined,
       };
 
-      const runOnce = async (attempt: 1 | 2) => {
+      const runOnce = async () => {
         const chunkBuffer: string[] = [];
         const streamCallbacks: StreamCallbacks = {
           onChunk: async (chunkText: string) => {
@@ -310,38 +310,13 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
           output.result || chunkBuffer.join('').trim(),
         );
         return {
-          attempt,
           output,
           finalResult,
           chunkCount: chunkBuffer.length,
-          rawResultLength: output.result?.length ?? 0,
         };
       };
 
-      let runResult = await runOnce(1);
-      if (runResult.output.status === 'success' && !runResult.finalResult) {
-        logger.warn(
-          {
-            requestId: req.requestId,
-            conversationId,
-            status: runResult.output.status,
-            chunkCount: runResult.chunkCount,
-            rawResultLength: runResult.rawResultLength,
-          },
-          'Empty successful result detected, retrying once',
-        );
-        runResult = await runOnce(2);
-        logger.info(
-          {
-            requestId: req.requestId,
-            conversationId,
-            status: runResult.output.status,
-            chunkCount: runResult.chunkCount,
-            finalResultLength: runResult.finalResult?.length ?? 0,
-          },
-          'Empty-result retry completed',
-        );
-      }
+      const runResult = await runOnce();
 
       const { output, finalResult } = runResult;
 
@@ -412,6 +387,18 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
       );
 
       if (stream) {
+        if (finalResult && runResult.chunkCount === 0) {
+          // Fallback for clients that only render chunk events.
+          writeSseEvent(res, 'chunk', { text: finalResult });
+          logger.warn(
+            {
+              requestId: req.requestId,
+              conversationId,
+              finalResultLength: finalResult.length,
+            },
+            'No chunk emitted during run; sent finalResult as fallback chunk',
+          );
+        }
         for (const outbound of outboundMessages) {
           writeSseEvent(res, 'chunk', {
             text: formatOutbound(outbound.text),
