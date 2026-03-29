@@ -30,6 +30,7 @@ export const MAX_EXECUTION_MS = parseIntWithDefault(
   process.env.MAX_EXECUTION_MS,
   300_000,
 );
+export const MAX_TURNS = parseIntWithDefault(process.env.MAX_TURNS, 2);
 export const SESSION_END_MARKER =
   process.env.SESSION_END_MARKER || '[[PICOCLAW_SESSION_END]]';
 
@@ -74,7 +75,7 @@ export const PROMPT_MAX_MESSAGES = parseIntWithDefault(
   10,
 );
 export const MCP_SERVER_WHITELIST = parseCsvList(
-  process.env.MCP_SERVER_WHITELIST || 'picoclaw',
+  process.env.MCP_SERVER_WHITELIST || 'picoclaw,kapi',
 );
 
 export const CLAUDE_MODEL = process.env.CLAUDE_MODEL || undefined;
