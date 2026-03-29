@@ -15,7 +15,6 @@ import {
   CLAUDE_MODEL,
   LOCAL_DB_PATH,
   MAX_EXECUTION_MS,
-  MAX_TURNS,
   MEMORY_DIR,
   MCP_SERVER_WHITELIST,
   ORG_DIR,
@@ -982,7 +981,6 @@ export class AgentEngine implements AgentRunner {
               : undefined,
           allowedTools,
           includePartialMessages: true,
-          maxTurns: MAX_TURNS,
           maxThinkingTokens: input.maxThinkingTokens,
           env: sdkEnv,
           stderr:
