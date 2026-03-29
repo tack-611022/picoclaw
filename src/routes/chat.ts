@@ -257,60 +257,93 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
 
     let releaseLock: (() => void) | undefined;
     const startedAt = Date.now();
-    const chunkBuffer: string[] = [];
-
     try {
       releaseLock = await acquireConversationLock(conversationId, {
         wait: false,
       });
       setConversationStatus(conversationId, 'running');
 
-      const streamCallbacks: StreamCallbacks = {
-        onChunk: async (chunkText: string) => {
-          const formatted = formatOutbound(chunkText);
-          if (!formatted) {
-            return;
-          }
-
-          chunkBuffer.push(formatted);
-          if (stream) {
-            writeSseEvent(res, 'chunk', { text: formatted });
-          }
-        },
-        onThinking:
-          stream && enableThinking
-            ? async (text: string) => {
-                writeSseEvent(res, 'thinking', { text });
-              }
-            : undefined,
-        onToolUse:
-          stream && showToolUse
-            ? async (tool: string, input: unknown) => {
-                writeSseEvent(res, 'tool_use', { tool, input });
-              }
-            : undefined,
+      const runInput = {
+        prompt,
+        conversationId,
+        sessionId: conversation.session_id,
+        resumeAt: conversation.last_assistant_uuid,
+        timeoutMs: executionTimeout,
+        assistantName: ASSISTANT_NAME,
+        maxThinkingTokens,
+        showToolUse,
+        model: body.model?.trim() || undefined,
+        mcpServers: mcpServers ?? undefined,
+        mcpContext: mcpContext ?? undefined,
       };
 
-      const output = await agentEngine.run(
-        {
-          prompt,
-          conversationId,
-          sessionId: conversation.session_id,
-          resumeAt: conversation.last_assistant_uuid,
-          timeoutMs: executionTimeout,
-          assistantName: ASSISTANT_NAME,
-          maxThinkingTokens,
-          showToolUse,
-          model: body.model?.trim() || undefined,
-          mcpServers: mcpServers ?? undefined,
-          mcpContext: mcpContext ?? undefined,
-        },
-        streamCallbacks,
-      );
+      const runOnce = async (attempt: 1 | 2) => {
+        const chunkBuffer: string[] = [];
+        const streamCallbacks: StreamCallbacks = {
+          onChunk: async (chunkText: string) => {
+            const formatted = formatOutbound(chunkText);
+            if (!formatted) {
+              return;
+            }
 
-      const finalResult = formatOutbound(
-        output.result || chunkBuffer.join('').trim(),
-      );
+            chunkBuffer.push(formatted);
+            if (stream) {
+              writeSseEvent(res, 'chunk', { text: formatted });
+            }
+          },
+          onThinking:
+            stream && enableThinking
+              ? async (text: string) => {
+                  writeSseEvent(res, 'thinking', { text });
+                }
+              : undefined,
+          onToolUse:
+            stream && showToolUse
+              ? async (tool: string, input: unknown) => {
+                  writeSseEvent(res, 'tool_use', { tool, input });
+                }
+              : undefined,
+        };
+
+        const output = await agentEngine.run(runInput, streamCallbacks);
+        const finalResult = formatOutbound(
+          output.result || chunkBuffer.join('').trim(),
+        );
+        return {
+          attempt,
+          output,
+          finalResult,
+          chunkCount: chunkBuffer.length,
+          rawResultLength: output.result?.length ?? 0,
+        };
+      };
+
+      let runResult = await runOnce(1);
+      if (runResult.output.status === 'success' && !runResult.finalResult) {
+        logger.warn(
+          {
+            requestId: req.requestId,
+            conversationId,
+            status: runResult.output.status,
+            chunkCount: runResult.chunkCount,
+            rawResultLength: runResult.rawResultLength,
+          },
+          'Empty successful result detected, retrying once',
+        );
+        runResult = await runOnce(2);
+        logger.info(
+          {
+            requestId: req.requestId,
+            conversationId,
+            status: runResult.output.status,
+            chunkCount: runResult.chunkCount,
+            finalResultLength: runResult.finalResult?.length ?? 0,
+          },
+          'Empty-result retry completed',
+        );
+      }
+
+      const { output, finalResult } = runResult;
 
       let assistantMessageId: string | null = null;
       if (finalResult) {
