@@ -218,7 +218,8 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
 
     const executionTimeout = getExecutionTimeout(body.max_execution_ms);
     const stream = body.stream === true;
-    const enableThinking = body.thinking === true;
+    // Force-disable thinking for latency-sensitive chat path.
+    const enableThinking = false;
     const maxThinkingTokens =
       enableThinking && body.max_thinking_tokens && body.max_thinking_tokens > 0
         ? body.max_thinking_tokens

@@ -94,7 +94,11 @@ describe('db', () => {
     }
 
     const promptMessages = getPromptMessages('conv-limit', 3);
-    expect(promptMessages.map((m) => m.id)).toEqual(['msg-3', 'msg-4', 'msg-5']);
+    expect(promptMessages.map((m) => m.id)).toEqual([
+      'msg-3',
+      'msg-4',
+      'msg-5',
+    ]);
     expect(promptMessages.map((m) => m.content)).toEqual([
       'message-3',
       'message-4',
