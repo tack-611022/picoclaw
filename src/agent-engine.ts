@@ -18,7 +18,6 @@ import {
   MEMORY_DIR,
   ORG_DIR,
   SDK_LOG_LEVEL,
-  SKILLS_DIR,
   SYSTEM_PROMPT_OVERRIDE,
 } from './config.js';
 import { logger } from './logger.js';
@@ -478,30 +477,110 @@ function createSanitizeBashHook(): HookCallback {
   };
 }
 
+function getHeaderCaseInsensitive(
+  headers: Record<string, string>,
+  key: string,
+): string {
+  const target = key.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === target) {
+      return v;
+    }
+  }
+  return '';
+}
+
+function extractKapiSessionID(
+  mergedMcpServers: Record<string, SdkMcpServerConfig>,
+): string {
+  const kapi = mergedMcpServers.kapi;
+  if (!kapi || !('headers' in kapi) || !kapi.headers) {
+    return '';
+  }
+  const headers = kapi.headers as Record<string, string>;
+  return getHeaderCaseInsensitive(headers, 'X-MCP-Session-Id').trim();
+}
+
+function createFillKapiUserIDHook(
+  kapiSessionID: string,
+  fallbackUserID: string,
+): HookCallback {
+  return async (input) => {
+    const preToolUse = input as PreToolUseHookInput;
+    if (!preToolUse.tool_name.startsWith('mcp__kapi__')) {
+      return {};
+    }
+    if (
+      !preToolUse.tool_input ||
+      typeof preToolUse.tool_input !== 'object' ||
+      Array.isArray(preToolUse.tool_input)
+    ) {
+      return {};
+    }
+
+    const toolInput = preToolUse.tool_input as Record<string, unknown>;
+    const rawUserID = toolInput.user_id;
+    const hasValidUserID =
+      typeof rawUserID === 'string'
+        ? rawUserID.trim() !== '' &&
+          !USER_ID_PLACEHOLDER_RE.test(rawUserID.trim())
+        : rawUserID !== undefined && rawUserID !== null;
+    if (hasValidUserID) {
+      return {};
+    }
+
+    const resolvedUserID = kapiSessionID || fallbackUserID;
+    if (!resolvedUserID) {
+      logger.warn(
+        {
+          tool: preToolUse.tool_name,
+          toolUseId: preToolUse.tool_use_id,
+        },
+        'Cannot backfill kapi user_id: missing X-MCP-Session-Id and USER_ID fallback',
+      );
+      return {};
+    }
+
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        updatedInput: {
+          ...toolInput,
+          user_id: resolvedUserID,
+        },
+      },
+    };
+  };
+}
+
 // --- Cached filesystem reads (invalidated on skill reload) ---
 
 let cachedOrgClaudeMd: string | undefined | null = null; // null = not loaded
 let cachedAdditionalDirs: string[] | null = null;
+const USER_ID_PLACEHOLDER_RE = /^\{\{\s*user_id\s*\}\}$/i;
 
 function discoverAdditionalDirectories(): string[] {
   if (cachedAdditionalDirs !== null) {
     return cachedAdditionalDirs;
   }
 
-  if (!fs.existsSync(SKILLS_DIR)) {
-    cachedAdditionalDirs = [];
-    return cachedAdditionalDirs;
-  }
-
-  const discovered: string[] = [];
-  for (const entry of fs.readdirSync(SKILLS_DIR)) {
-    const fullPath = path.join(SKILLS_DIR, entry);
-    if (fs.statSync(fullPath).isDirectory()) {
-      discovered.push(fullPath);
+  const candidates = [ORG_DIR, MEMORY_DIR].filter(Boolean);
+  const deduped = new Set<string>();
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) {
+      continue;
+    }
+    try {
+      if (!fs.statSync(candidate).isDirectory()) {
+        continue;
+      }
+      deduped.add(candidate);
+    } catch {
+      // Ignore invalid/unreadable paths.
     }
   }
-  cachedAdditionalDirs = discovered;
-  return discovered;
+  cachedAdditionalDirs = Array.from(deduped);
+  return cachedAdditionalDirs;
 }
 
 function loadOrgClaudeMd(): string | undefined {
@@ -742,6 +821,8 @@ export class AgentEngine implements AgentRunner {
 
       const model = input.model || CLAUDE_MODEL || undefined;
       const fallbackModel = CLAUDE_FALLBACK_MODEL || undefined;
+      const kapiSessionID = extractKapiSessionID(mergedMcpServers);
+      const fallbackUserID = (process.env.USER_ID || '').trim();
       perf.mark('startSdkQuery', {
         model: model || '(default)',
         fallbackModel: fallbackModel || '(none)',
@@ -792,6 +873,9 @@ export class AgentEngine implements AgentRunner {
               },
             ],
             PreToolUse: [
+              {
+                hooks: [createFillKapiUserIDHook(kapiSessionID, fallbackUserID)],
+              },
               {
                 matcher: 'Bash',
                 hooks: [createSanitizeBashHook()],
