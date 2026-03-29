@@ -198,4 +198,34 @@ describe('syncSkills', () => {
     fs.mkdirSync(dirs.orgDir, { recursive: true });
     fs.mkdirSync(dirs.userDir, { recursive: true });
   });
+
+  it('skips rewriting unchanged skills on repeated sync', () => {
+    clearAllSources();
+    createSkill(dirs.builtInDir, 'stable-skill', '# stable\n');
+    syncSkills();
+
+    const destinationSkill = path.join(dirs.destination, 'stable-skill');
+    const before = fs.statSync(destinationSkill).mtimeMs;
+    syncSkills();
+    const after = fs.statSync(destinationSkill).mtimeMs;
+
+    expect(after).toBe(before);
+  });
+
+  it('performs incremental updates without rewriting unchanged skills', () => {
+    clearAllSources();
+    createSkill(dirs.builtInDir, 'keep-me', '# keep\n');
+    syncSkills();
+
+    const keptDestination = path.join(dirs.destination, 'keep-me');
+    const before = fs.statSync(keptDestination).mtimeMs;
+
+    createSkill(dirs.orgDir, 'new-org-skill', '# new\n');
+    syncSkills();
+    const after = fs.statSync(keptDestination).mtimeMs;
+
+    expect(after).toBe(before);
+    expect(listEffective()).toContain('new-org-skill');
+    expect(listEffective()).toContain('keep-me');
+  });
 });

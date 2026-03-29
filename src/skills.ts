@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 
 import { BUILT_IN_SKILLS_DIR, MEMORY_DIR, SKILLS_DIR } from './config.js';
 import { logger } from './logger.js';
@@ -7,52 +8,108 @@ import { logger } from './logger.js';
 /** User skills directory: always under MEMORY_DIR for volume consolidation. */
 const USER_SKILLS_DIR = path.join(MEMORY_DIR, 'skills');
 
-function syncDirectory(sourceDir: string, destination: string): number {
+interface SkillEntry {
+  name: string;
+  sourcePath: string;
+  signature: string;
+}
+
+function listSkillEntries(sourceDir: string): SkillEntry[] {
   if (!fs.existsSync(sourceDir)) {
-    return 0;
+    return [];
   }
 
-  let count = 0;
+  const entries: SkillEntry[] = [];
   for (const entry of fs.readdirSync(sourceDir)) {
     const sourcePath = path.join(sourceDir, entry);
     if (!fs.statSync(sourcePath).isDirectory()) {
       continue;
     }
-
-    const destinationPath = path.join(destination, entry);
-    fs.rmSync(destinationPath, { recursive: true, force: true });
-    fs.cpSync(sourcePath, destinationPath, { recursive: true });
-    count++;
+    entries.push({
+      name: entry,
+      sourcePath,
+      signature: buildSkillSignature(sourcePath),
+    });
   }
-  return count;
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  return entries;
 }
 
 /**
- * Copy skill directories that do NOT already exist at the destination.
- * Used for user skills: they supplement but never override org or built-in skills.
+ * Fast, deterministic skill signature for change detection.
+ * We only inspect one level inside the skill directory to keep I/O lightweight.
  */
-function syncDirectoryAdditive(sourceDir: string, destination: string): number {
-  if (!fs.existsSync(sourceDir)) {
-    return 0;
+function buildSkillSignature(skillDir: string): string {
+  const parts: string[] = [];
+
+  const skillMdPath = path.join(skillDir, 'SKILL.md');
+  if (fs.existsSync(skillMdPath)) {
+    const content = fs.readFileSync(skillMdPath);
+    const hash = createHash('sha1').update(content).digest('hex');
+    parts.push(`skillmd:${hash}`);
+  } else {
+    parts.push('skillmd:none');
   }
 
-  let count = 0;
-  for (const entry of fs.readdirSync(sourceDir)) {
-    const sourcePath = path.join(sourceDir, entry);
-    if (!fs.statSync(sourcePath).isDirectory()) {
+  const children = fs.readdirSync(skillDir).sort();
+  for (const child of children) {
+    if (child === 'SKILL.md') continue;
+    const childPath = path.join(skillDir, child);
+    const childStat = fs.statSync(childPath);
+    const kind = childStat.isDirectory() ? 'd' : 'f';
+    if (kind === 'd') {
+      parts.push(`${kind}:${child}`);
       continue;
     }
+    const content = fs.readFileSync(childPath);
+    const hash = createHash('sha1').update(content).digest('hex');
+    parts.push(`${kind}:${child}:${hash}`);
+  }
+  return parts.join('|');
+}
 
+function listDestinationEntries(destination: string): Map<string, SkillEntry> {
+  const entries = new Map<string, SkillEntry>();
+  if (!fs.existsSync(destination)) {
+    return entries;
+  }
+
+  for (const entry of fs.readdirSync(destination)) {
     const destinationPath = path.join(destination, entry);
-    // Skip if skill already exists (from built-in or org tier).
-    if (fs.existsSync(destinationPath)) {
+    if (!fs.statSync(destinationPath).isDirectory()) {
       continue;
     }
-
-    fs.cpSync(sourcePath, destinationPath, { recursive: true });
-    count++;
+    entries.set(entry, {
+      name: entry,
+      sourcePath: destinationPath,
+      signature: buildSkillSignature(destinationPath),
+    });
   }
-  return count;
+  return entries;
+}
+
+function mapEntries(entries: SkillEntry[]): Map<string, SkillEntry> {
+  const mapped = new Map<string, SkillEntry>();
+  for (const entry of entries) {
+    mapped.set(entry.name, entry);
+  }
+  return mapped;
+}
+
+function mapsEqualBySignature(
+  left: Map<string, SkillEntry>,
+  right: Map<string, SkillEntry>,
+): boolean {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const [name, l] of left) {
+    const r = right.get(name);
+    if (!r || r.signature !== l.signature) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -128,20 +185,64 @@ export function syncSkills(): void {
     );
   }
 
-  // Clear destination so removed skills do not persist across reloads.
-  for (const entry of fs.readdirSync(destination)) {
-    const entryPath = path.join(destination, entry);
-    if (fs.statSync(entryPath).isDirectory()) {
-      fs.rmSync(entryPath, { recursive: true, force: true });
+  const builtInEntries = listSkillEntries(BUILT_IN_SKILLS_DIR);
+  const orgEntries = listSkillEntries(SKILLS_DIR);
+  const userEntries = listSkillEntries(USER_SKILLS_DIR);
+
+  // Effective precedence: built-in < org, user is additive only.
+  const desired = mapEntries(builtInEntries);
+  for (const entry of orgEntries) {
+    desired.set(entry.name, entry);
+  }
+  for (const entry of userEntries) {
+    if (!desired.has(entry.name)) {
+      desired.set(entry.name, entry);
     }
   }
 
-  const builtInCount = syncDirectory(BUILT_IN_SKILLS_DIR, destination);
-  const orgCount = syncDirectory(SKILLS_DIR, destination);
-  const userCount = syncDirectoryAdditive(USER_SKILLS_DIR, destination);
+  const current = listDestinationEntries(destination);
+  if (mapsEqualBySignature(desired, current)) {
+    logger.info(
+      {
+        builtIn: builtInEntries.length,
+        org: orgEntries.length,
+        user: userEntries.length,
+        skipped: true,
+      },
+      'Skills synced to .claude/skills/',
+    );
+    return;
+  }
+
+  let removedCount = 0;
+  for (const [name] of current) {
+    if (!desired.has(name)) {
+      fs.rmSync(path.join(destination, name), { recursive: true, force: true });
+      removedCount++;
+    }
+  }
+
+  let updatedCount = 0;
+  for (const [name, desiredEntry] of desired) {
+    const existing = current.get(name);
+    if (existing && existing.signature === desiredEntry.signature) {
+      continue;
+    }
+    const destinationPath = path.join(destination, name);
+    fs.rmSync(destinationPath, { recursive: true, force: true });
+    fs.cpSync(desiredEntry.sourcePath, destinationPath, { recursive: true });
+    updatedCount++;
+  }
 
   logger.info(
-    { builtIn: builtInCount, org: orgCount, user: userCount },
+    {
+      builtIn: builtInEntries.length,
+      org: orgEntries.length,
+      user: userEntries.length,
+      updated: updatedCount,
+      removed: removedCount,
+      skipped: false,
+    },
     'Skills synced to .claude/skills/',
   );
 }
