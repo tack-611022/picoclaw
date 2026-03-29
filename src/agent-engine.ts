@@ -520,11 +520,7 @@ function createFillKapiUserIDHook(
 
     const toolInput = preToolUse.tool_input as Record<string, unknown>;
     const rawUserID = toolInput.user_id;
-    const hasValidUserID =
-      typeof rawUserID === 'string'
-        ? rawUserID.trim() !== '' &&
-          !USER_ID_PLACEHOLDER_RE.test(rawUserID.trim())
-        : rawUserID !== undefined && rawUserID !== null;
+    const hasValidUserID = isValidKapiUserID(rawUserID);
     if (hasValidUserID) {
       return {};
     }
@@ -558,6 +554,24 @@ function createFillKapiUserIDHook(
 let cachedOrgClaudeMd: string | undefined | null = null; // null = not loaded
 let cachedAdditionalDirs: string[] | null = null;
 const USER_ID_PLACEHOLDER_RE = /^\{\{\s*user_id\s*\}\}$/i;
+const USER_ID_INVALID_SENTINEL_RE = /^(unknown|null|undefined)$/i;
+
+function isValidKapiUserID(rawUserID: unknown): boolean {
+  if (typeof rawUserID === 'string') {
+    const normalized = rawUserID.trim();
+    if (normalized === '') {
+      return false;
+    }
+    if (USER_ID_PLACEHOLDER_RE.test(normalized)) {
+      return false;
+    }
+    if (USER_ID_INVALID_SENTINEL_RE.test(normalized)) {
+      return false;
+    }
+    return true;
+  }
+  return rawUserID !== undefined && rawUserID !== null;
+}
 
 function discoverAdditionalDirectories(): string[] {
   if (cachedAdditionalDirs !== null) {
