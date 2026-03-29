@@ -8,6 +8,7 @@ import {
   STORE_DIR,
   TASK_LOG_RETENTION,
 } from './config.js';
+import { createPerfTrace } from './perf.js';
 import {
   Conversation,
   ConversationMessage,
@@ -202,10 +203,19 @@ export function cleanupStaleData(): void {
 
 export function syncDatabaseToVolume(): void {
   if (!db) return;
+  const perf = createPerfTrace('dbSync');
+
   cleanupStaleData();
+  perf.mark('cleanupStaleData');
+
   db.pragma('wal_checkpoint(TRUNCATE)');
+  perf.mark('walCheckpoint');
+
   fs.mkdirSync(path.dirname(dbPaths.persistentDbPath), { recursive: true });
   fs.copyFileSync(dbPaths.localDbPath, dbPaths.persistentDbPath);
+  perf.mark('fileCopy');
+
+  perf.flush('[PERF:DB] sync to volume complete');
 }
 
 export interface DatabaseHealth {

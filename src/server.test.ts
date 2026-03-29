@@ -612,7 +612,7 @@ describe('http server', () => {
     expect(capturedInput.mcpServers).toBeUndefined();
   });
 
-  it('passes mcpContext from top-level mcp_session_id/ledger_id/region', async () => {
+  it('passes mcp_context to engine when provided', async () => {
     let capturedInput: any;
     const captureEngine: AgentRunner = {
       async run(input) {
@@ -620,8 +620,8 @@ describe('http server', () => {
         return {
           status: 'success',
           result: 'ok',
-          newSessionId: 'session-ctx-top',
-          lastAssistantUuid: 'uuid-ctx-top',
+          newSessionId: 'session-ctx',
+          lastAssistantUuid: 'uuid-ctx',
         };
       },
     };
@@ -632,20 +632,30 @@ describe('http server', () => {
       .post('/chat')
       .set('Authorization', 'Bearer test-token')
       .send({
-        message: 'context top-level',
-        mcp_session_id: 'SID-123',
-        ledger_id: 86403580,
-        region: 'R1',
+        message: 'test context',
+        mcp_context: {
+          finance: {
+            headers: { Authorization: 'Bearer user-tok', 'X-Tenant': 'abc' },
+          },
+          data: {
+            env: { USER_TOKEN: 'secret' },
+            args: ['--user=u1'],
+          },
+        },
       });
 
     expect(capturedInput.mcpContext).toEqual({
-      sessionId: 'SID-123',
-      ledgerId: '86403580',
-      region: 'R1',
+      finance: {
+        headers: { Authorization: 'Bearer user-tok', 'X-Tenant': 'abc' },
+      },
+      data: {
+        env: { USER_TOKEN: 'secret' },
+        args: ['--user=u1'],
+      },
     });
   });
 
-  it('passes mcpContext from context object with tool args', async () => {
+  it('does not pass mcpContext when mcp_context is omitted', async () => {
     let capturedInput: any;
     const captureEngine: AgentRunner = {
       async run(input) {
@@ -653,8 +663,8 @@ describe('http server', () => {
         return {
           status: 'success',
           result: 'ok',
-          newSessionId: 'session-ctx-object',
-          lastAssistantUuid: 'uuid-ctx-object',
+          newSessionId: 'session-noctx',
+          lastAssistantUuid: 'uuid-noctx',
         };
       },
     };
@@ -664,36 +674,101 @@ describe('http server', () => {
     await request(captureApp)
       .post('/chat')
       .set('Authorization', 'Bearer test-token')
+      .send({ message: 'no context' });
+
+    expect(capturedInput.mcpContext).toBeUndefined();
+  });
+
+  it('returns warnings for invalid mcp_context entries', async () => {
+    const captureEngine: AgentRunner = {
+      async run() {
+        return {
+          status: 'success',
+          result: 'ok',
+          newSessionId: 'session-ctxwarn',
+          lastAssistantUuid: 'uuid-ctxwarn',
+        };
+      },
+    };
+    const serverModule = await import('./server.js');
+    const captureApp = serverModule.createServer(captureEngine);
+
+    const response = await request(captureApp)
+      .post('/chat')
+      .set('Authorization', 'Bearer test-token')
       .send({
-        message: 'context object',
-        context: {
-          session_id: 'SID-ctx',
-          ledger_id: '777',
-          region: 'R2',
-          mcp_tool_args: {
-            currency: 'CNY',
-          },
-          mcp_tool_args_by_tool: {
-            query_expenses: {
-              page_no: 1,
-            },
-          },
+        message: 'test ctx warnings',
+        mcp_context: {
+          bad: {},
+          picoclaw: { headers: { 'X-Bad': 'val' } },
         },
       });
 
-    expect(capturedInput.mcpContext).toEqual({
-      sessionId: 'SID-ctx',
-      ledgerId: '777',
-      region: 'R2',
-      mcpToolArgs: {
-        currency: 'CNY',
+    expect(response.status).toBe(200);
+    expect(response.body.warnings).toBeDefined();
+    expect(response.body.warnings).toContainEqual(
+      expect.stringContaining('picoclaw'),
+    );
+    expect(response.body.warnings).toContainEqual(
+      expect.stringContaining('bad'),
+    );
+  });
+
+  it('surfaces contextWarnings from engine in response', async () => {
+    const warnEngine: AgentRunner = {
+      async run() {
+        return {
+          status: 'success',
+          result: 'ok',
+          newSessionId: 'session-engwarn',
+          lastAssistantUuid: 'uuid-engwarn',
+          contextWarnings: [
+            "mcp_context: 'missing' does not match any configured MCP server and was ignored",
+          ],
+        };
       },
-      mcpToolArgsByTool: {
-        query_expenses: {
-          page_no: 1,
+    };
+    const serverModule = await import('./server.js');
+    const warnApp = serverModule.createServer(warnEngine);
+
+    const response = await request(warnApp)
+      .post('/chat')
+      .set('Authorization', 'Bearer test-token')
+      .send({ message: 'test engine warnings' });
+
+    expect(response.status).toBe(200);
+    expect(response.body.warnings).toBeDefined();
+    expect(response.body.warnings).toContainEqual(
+      expect.stringContaining('missing'),
+    );
+  });
+
+  it('omits warnings when mcp_context is valid and no engine warnings', async () => {
+    const captureEngine: AgentRunner = {
+      async run() {
+        return {
+          status: 'success',
+          result: 'ok',
+          newSessionId: 'session-ctxok',
+          lastAssistantUuid: 'uuid-ctxok',
+        };
+      },
+    };
+    const serverModule = await import('./server.js');
+    const captureApp = serverModule.createServer(captureEngine);
+
+    const response = await request(captureApp)
+      .post('/chat')
+      .set('Authorization', 'Bearer test-token')
+      .send({
+        message: 'test valid ctx',
+        mcp_context: {
+          finance: { headers: { Authorization: 'Bearer tok' } },
         },
-      },
-    });
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body).not.toHaveProperty('warnings');
   });
 
   it('accepts stop request and invokes shutdown callback', async () => {

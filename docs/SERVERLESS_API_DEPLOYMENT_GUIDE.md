@@ -264,8 +264,8 @@ These settings only affect automatic cleanup. Undelivered outbound messages are 
 
 | Package | Version | Notes |
 |---|---|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.2.74` | Core agent runtime |
-| `@modelcontextprotocol/sdk` | `1.27.1` | MCP server framework |
+| `@anthropic-ai/claude-agent-sdk` | `0.2.86` | Core agent runtime |
+| `@modelcontextprotocol/sdk` | `1.28.0` | MCP server framework |
 
 Do not downgrade these packages. Upgrades should include compatibility regression testing.
 
@@ -416,6 +416,7 @@ Request body:
 | `max_thinking_tokens` | number | No | Max thinking tokens when thinking is enabled (default: `10000`) |
 | `show_tool_use` | boolean | No | Stream tool invocation events (default: `false`) |
 | `mcp_servers` | object | No | Per-request MCP servers (see Dynamic MCP Servers below) |
+| `mcp_context` | object | No | Per-request auth context for MCP servers (see below) |
 
 Non-streaming response:
 
@@ -507,6 +508,32 @@ Example:
 ```
 
 The agent will see tools from all MCP servers as `mcp__<name>__<tool>`. Invalid entries (missing required fields) are silently ignored.
+
+### 6.3.2 Per-Request MCP Context
+
+The `mcp_context` field injects dynamic auth headers or environment variables into existing MCP servers without re-defining their full config. Context is applied after the three-way server merge.
+
+```json
+{
+  "message": "查询我的订单",
+  "mcp_context": {
+    "finance": {
+      "headers": {
+        "Authorization": "Bearer user-token-123",
+        "X-Tenant-Id": "tenant-abc"
+      }
+    }
+  }
+}
+```
+
+| Field | Applies to | Behavior |
+|---|---|---|
+| `headers` | http/sse | Merged with static headers (context overrides same-key) |
+| `env` | stdio | Merged with static env (context overrides same-key) |
+| `args` | stdio | Appended to existing args |
+
+Warnings are returned for non-existent server names, reserved names (`picoclaw`), and type mismatches.
 
 ### 6.4 List All Conversations
 

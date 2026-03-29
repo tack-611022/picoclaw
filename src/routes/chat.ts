@@ -5,9 +5,13 @@ import { Request, Response, Router } from 'express';
 import {
   AgentRunner,
   McpServerConfig,
+  McpServerContext,
   StreamCallbacks,
 } from '../agent-engine.js';
-import { validateSingleMcpServer } from '../managed-mcp.js';
+import {
+  validateSingleMcpContext,
+  validateSingleMcpServer,
+} from '../managed-mcp.js';
 import {
   ASSISTANT_NAME,
   MAX_EXECUTION_MS,
@@ -46,17 +50,7 @@ interface ChatRequestBody {
   show_tool_use?: boolean;
   model?: string;
   mcp_servers?: Record<string, McpServerConfig>;
-  mcp_session_id?: string;
-  ledger_id?: string | number;
-  region?: string;
-  context?: {
-    mcp_session_id?: string;
-    session_id?: string;
-    ledger_id?: string | number;
-    region?: string;
-    mcp_tool_args?: Record<string, unknown>;
-    mcp_tool_args_by_tool?: Record<string, Record<string, unknown>>;
-  };
+  mcp_context?: Record<string, unknown>;
 }
 
 function getExecutionTimeout(ms?: number): number {
@@ -127,78 +121,54 @@ function validateMcpServers(raw: unknown): McpValidationResult {
   };
 }
 
+interface McpContextValidationResult {
+  context: Record<string, McpServerContext> | null;
+  warnings: string[];
+}
+
+function validateMcpContext(raw: unknown): McpContextValidationResult {
+  const warnings: string[] = [];
+
+  if (raw === undefined || raw === null) {
+    return { context: null, warnings };
+  }
+
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    warnings.push(
+      `mcp_context: expected an object, got ${Array.isArray(raw) ? 'array' : typeof raw}`,
+    );
+    return { context: null, warnings };
+  }
+
+  const result: Record<string, McpServerContext> = {};
+  for (const [name, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (RESERVED_MCP_NAMES.has(name)) {
+      warnings.push(
+        `mcp_context: '${name}' is a reserved server name and was ignored`,
+      );
+      continue;
+    }
+
+    const validation = validateSingleMcpContext(entry);
+    if (validation.valid) {
+      result[name] = validation.context;
+    } else {
+      warnings.push(`mcp_context: '${name}' skipped — ${validation.reason}`);
+    }
+  }
+
+  return {
+    context: Object.keys(result).length > 0 ? result : null,
+    warnings,
+  };
+}
+
 function containsSessionEndMarker(text: string | null | undefined): boolean {
   if (!SESSION_END_MARKER) {
     return false;
   }
 
   return Boolean(text && text.includes(SESSION_END_MARKER));
-}
-
-function normalizeContext(
-  body: ChatRequestBody,
-  headerSessionId: string = '',
-):
-  | {
-      sessionId?: string;
-      ledgerId?: string;
-      region?: string;
-      mcpToolArgs?: Record<string, unknown>;
-      mcpToolArgsByTool?: Record<string, Record<string, unknown>>;
-    }
-  | undefined {
-  const context = body.context || {};
-
-  const sessionId = String(
-    body.mcp_session_id ??
-      context.mcp_session_id ??
-      context.session_id ??
-      headerSessionId ??
-      '',
-  ).trim();
-
-  const rawLedgerId = body.ledger_id ?? context.ledger_id;
-  const ledgerId =
-    rawLedgerId === undefined || rawLedgerId === null
-      ? ''
-      : String(rawLedgerId).trim();
-
-  const region = String(body.region ?? context.region ?? '').trim();
-
-  const mcpToolArgs =
-    context.mcp_tool_args &&
-    typeof context.mcp_tool_args === 'object' &&
-    !Array.isArray(context.mcp_tool_args)
-      ? (context.mcp_tool_args as Record<string, unknown>)
-      : undefined;
-
-  const mcpToolArgsByTool =
-    context.mcp_tool_args_by_tool &&
-    typeof context.mcp_tool_args_by_tool === 'object' &&
-    !Array.isArray(context.mcp_tool_args_by_tool)
-      ? (context.mcp_tool_args_by_tool as Record<
-          string,
-          Record<string, unknown>
-        >)
-      : undefined;
-
-  if (
-    !sessionId &&
-    !ledgerId &&
-    !region &&
-    !mcpToolArgs &&
-    !mcpToolArgsByTool
-  ) {
-    return undefined;
-  }
-
-  return {
-    ...(sessionId ? { sessionId } : {}),
-    ...(ledgerId ? { ledgerId } : {}),
-    ...(region ? { region } : {}),
-    ...(mcpToolArgs ? { mcpToolArgs } : {}),
-    ...(mcpToolArgsByTool ? { mcpToolArgsByTool } : {}),
-  };
 }
 
 export function chatRoutes(agentEngine: AgentRunner): Router {
@@ -255,10 +225,9 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
     const { servers: mcpServers, warnings: mcpWarnings } = validateMcpServers(
       body.mcp_servers,
     );
-    const mcpContext = normalizeContext(
-      body,
-      req.header('x-mcp-session-id') || '',
-    );
+    const { context: mcpContext, warnings: mcpContextWarnings } =
+      validateMcpContext(body.mcp_context);
+    const allWarnings = [...mcpWarnings, ...mcpContextWarnings];
 
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -268,7 +237,7 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
       writeSseEvent(res, 'start', {
         conversation_id: conversationId,
         message_id: userMessageId,
-        ...(mcpWarnings.length > 0 && { warnings: mcpWarnings }),
+        ...(allWarnings.length > 0 && { warnings: allWarnings }),
       });
     }
 
@@ -330,7 +299,7 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
           showToolUse,
           model: body.model?.trim() || undefined,
           mcpServers: mcpServers ?? undefined,
-          mcpContext,
+          mcpContext: mcpContext ?? undefined,
         },
         streamCallbacks,
       );
@@ -366,6 +335,9 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
           containsSessionEndMarker(message.text),
         );
       const durationMs = Date.now() - startedAt;
+      if (output.contextWarnings) {
+        allWarnings.push(...output.contextWarnings);
+      }
       const responseBody = {
         status: output.status,
         conversation_id: conversationId,
@@ -379,7 +351,7 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
         session_end_marker: SESSION_END_MARKER,
         session_end_marker_detected: hasSessionEndMarker,
         ...(output.usage && { usage: output.usage }),
-        ...(mcpWarnings.length > 0 && { warnings: mcpWarnings }),
+        ...(allWarnings.length > 0 && { warnings: allWarnings }),
       };
 
       // Expose usage to per-request middleware log (server.ts)

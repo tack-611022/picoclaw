@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { McpServerConfig } from './agent-engine.js';
+import { McpServerConfig, McpServerContext } from './agent-engine.js';
 import { ORG_DIR } from './config.js';
 import { logger } from './logger.js';
 
@@ -79,6 +79,77 @@ export function validateSingleMcpServer(
     config: null,
     reason: `unsupported transport type '${type}' (expected http, sse, or stdio)`,
   };
+}
+
+export type McpContextValidationResult =
+  | { valid: true; context: McpServerContext }
+  | { valid: false; reason: string };
+
+/**
+ * Validate a single mcp_context entry (one server's overlay).
+ * Returns `{ valid: true, context }` on success, `{ valid: false, reason }` on failure.
+ * Shared by per-request validation in chat routes.
+ */
+export function validateSingleMcpContext(
+  raw: unknown,
+): McpContextValidationResult {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return {
+      valid: false,
+      reason: `expected an object, got ${raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw}`,
+    };
+  }
+
+  const cfg = raw as Record<string, unknown>;
+  const result: McpServerContext = {};
+  let hasFields = false;
+
+  if (cfg.headers !== undefined) {
+    if (
+      typeof cfg.headers !== 'object' ||
+      cfg.headers === null ||
+      Array.isArray(cfg.headers)
+    ) {
+      return {
+        valid: false,
+        reason: 'headers must be an object with string values',
+      };
+    }
+    result.headers = cfg.headers as Record<string, string>;
+    hasFields = true;
+  }
+
+  if (cfg.env !== undefined) {
+    if (
+      typeof cfg.env !== 'object' ||
+      cfg.env === null ||
+      Array.isArray(cfg.env)
+    ) {
+      return {
+        valid: false,
+        reason: 'env must be an object with string values',
+      };
+    }
+    result.env = cfg.env as Record<string, string>;
+    hasFields = true;
+  }
+
+  if (cfg.args !== undefined) {
+    if (!Array.isArray(cfg.args)) {
+      return { valid: false, reason: 'args must be an array of strings' };
+    }
+    result.args = cfg.args as string[];
+    hasFields = true;
+  }
+
+  if (!hasFields) {
+    return {
+      valid: false,
+      reason: 'context must have at least one of: headers, env, args',
+    };
+  }
+
+  return { valid: true, context: result };
 }
 
 /**

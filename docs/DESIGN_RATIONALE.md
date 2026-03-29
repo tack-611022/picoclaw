@@ -61,21 +61,69 @@ This gives SQLite its preferred environment (local filesystem with proper lockin
 
 WAL (Write-Ahead Log) mode enables concurrent reads during writes. However, copying a database file while the WAL has uncommitted pages would produce an inconsistent copy. `TRUNCATE` mode checkpoints all WAL pages into the main database file and then truncates the WAL to zero length, ensuring the main `.db` file is self-contained and safe to copy.
 
-## Why MCP Server is a Subprocess
+## Why In-Process MCP for Built-in Server
 
-The Claude Agent SDK requires MCP servers to be external processes communicating via stdio (or SSE/HTTP). This is not a design choice — it's a constraint of the SDK's architecture:
+The built-in `picoclaw` MCP server now runs in-process using the SDK's `createSdkMcpServer()`
+with `type: 'sdk'` transport. This replaces the previous stdio subprocess model where each
+`query()` call spawned a `node dist/mcp-server.js` child process.
 
-```
-SDK (sdk.mjs) → spawns CLI (cli.js) → CLI spawns MCP servers (stdio)
-```
+**Why the change:** Performance profiling (two independent teams, March 2026) identified
+per-request CLI subprocess spawn as the primary bottleneck (~2s on SDK 0.2.74). While the
+SDK 0.2.86 upgrade itself reduced this to ~530ms, A/B testing confirmed the in-process
+MCP provides an additional ~40ms improvement (stdio 529ms → in-process 490ms sdkInit)
+and eliminates the separate SQLite connection overhead.
 
-The CLI process manages MCP server lifecycle. An in-process MCP server would require the SDK to support it natively (which it does via `type: 'sdk'`), but stdio transport is more reliable for PicoClaw because:
+**How it works:** `src/mcp-inprocess.ts` uses the SDK's `createSdkMcpServer()` + `tool()`
+helper to define the same 7 picoclaw tools. Instead of opening an independent SQLite
+connection via env vars, the tool handlers directly import functions from `db.ts`, sharing
+the main PicoClaw database connection. The SDK bridges calls from the CLI subprocess to
+the in-process `McpServer` instance.
 
-1. **The MCP server shares the same SQLite database.** It receives `PICOCLAW_DB_PATH` as an environment variable and opens its own connection. This works because both the main process and MCP subprocess run on the same machine, accessing the same `/tmp/messages.db` file. (Legacy `NANOCLAW_DB_PATH` is accepted as fallback.)
+**Trade-offs:**
 
-2. **Process isolation prevents MCP crashes from taking down the HTTP server.** If an MCP tool handler throws, only the subprocess is affected.
+1. **No process isolation.** If an MCP tool handler throws, the exception propagates in the
+   main PicoClaw process. However, tool handlers are simple database operations with
+   defensive error handling — the risk is low.
 
-3. **Subagent inheritance works naturally.** When the SDK spawns subagents (Task tool), those subagents can also access the MCP server because stdio transport is inherited through the process tree.
+2. **Shared database connection.** The in-process model eliminates the need for a separate
+   SQLite connection. This is actually cleaner — no env var coordination, no redundant
+   connection lifecycle, and no risk of WAL contention between two connections to the
+   same file.
+
+3. **Backward compatibility.** The stdio variant (`src/mcp-server.ts`) is retained for
+   external/Docker scenarios that need `PICOCLAW_MCP_SERVER_PATH` override, standalone
+   MCP server testing, or future scenarios where process isolation is needed.
+
+## Why Not V2 Session API (as of SDK 0.2.86)
+
+The Claude Agent SDK exports `unstable_v2_createSession()` which maintains a persistent
+CLI process across multiple `send()`/`stream()` cycles. This would eliminate the ~2s
+per-request CLI subprocess spawn overhead — the single largest performance bottleneck.
+
+However, `SDKSessionOptions` (the V2 configuration type) lacks critical options that
+PicoClaw requires:
+
+| Missing option | PicoClaw requirement |
+|---|---|
+| `cwd` | Set to `MEMORY_DIR` for persona discovery |
+| `mcpServers` | Three-way merge: org-managed + built-in + per-request |
+| `settingSources` | `['project', 'user']` for CLAUDE.md loading |
+| `systemPrompt` | Org persona via `{ preset: 'claude_code', append }` |
+| `includePartialMessages` | SSE streaming support |
+| `thinking` / `maxThinkingTokens` | Extended thinking configuration |
+| `resume` / `resumeSessionAt` | Cross-request session resume |
+| `fallbackModel` | Automatic model fallback |
+| `abortController` | Per-request timeout |
+| `additionalDirectories` | Skill directory access |
+
+V1 `query()` Options has 30+ configurable fields. V2 `SDKSessionOptions` has 10.
+Two independent performance investigation teams recommended V2 as the highest-priority
+optimization, but their code examples were pseudocode that assumed V2 accepts V1
+options — which it does not.
+
+**Re-evaluation criteria:** When the SDK adds `cwd`, `mcpServers`, `settingSources`,
+and `includePartialMessages` to `SDKSessionOptions`, V2 becomes viable for PicoClaw.
+Monitor SDK releases for these additions.
 
 ## Why MessageStream (AsyncIterable Prompt)
 

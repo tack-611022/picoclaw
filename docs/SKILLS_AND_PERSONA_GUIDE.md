@@ -210,6 +210,7 @@ Not all configuration changes take effect the same way. This table covers every 
 | `managed-mcp.json` (`$ORG_DIR/managed-mcp.json`) | Container restart (loaded by `src/managed-mcp.ts` at boot) |
 | Environment variables (`API_TOKEN`, `MAX_EXECUTION_MS`, etc.) | Container restart (read once by `config.ts` at module load) |
 | Per-request MCP servers (`mcp_servers` field) | Immediately — passed per-request to `query()` |
+| Per-request MCP context (`mcp_context` field) | Immediately — merged per-request after server merge |
 
 **Key insight:** CLAUDE.md changes are instant (next request), but skill changes require an explicit reload step. A new skill requires at minimum two HTTP calls to activate: `POST /admin/reload-skills` to sync it into `.claude/skills/`, then the next `POST /chat` to use it.
 

@@ -19,6 +19,7 @@ import {
 import { closeDatabase, initDatabase, syncDatabaseToVolume } from './db.js';
 import { logger } from './logger.js';
 import { getManagedMcpNames, loadManagedMcpServers } from './managed-mcp.js';
+import { createPerfTrace } from './perf.js';
 import { createServer } from './server.js';
 import { ensureClaudeSettings, syncSkills } from './skills.js';
 
@@ -43,10 +44,19 @@ function ensureDataDirectories(): void {
 }
 
 async function main(): Promise<void> {
+  const bootPerf = createPerfTrace('boot');
+
   ensureDataDirectories();
+  bootPerf.mark('ensureDataDirectories');
+
   initDatabase();
+  bootPerf.mark('initDatabase');
+
   ensureClaudeSettings();
+  bootPerf.mark('ensureClaudeSettings');
+
   syncSkills();
+  bootPerf.mark('syncSkills');
 
   const orgClaudeMdExists = ORG_DIR
     ? fs.existsSync(path.join(ORG_DIR, 'CLAUDE.md'))
@@ -58,6 +68,8 @@ async function main(): Promise<void> {
   // instead of relying on CLI auto-discovery from /etc/claude-code/,
   // which conflicts with --mcp-config (enterprise MCP exclusion).
   loadManagedMcpServers();
+  bootPerf.mark('loadManagedMcpServers');
+
   const managedMcpNames = getManagedMcpNames();
 
   logger.info(
@@ -82,6 +94,8 @@ async function main(): Promise<void> {
     },
     'Startup diagnostics',
   );
+
+  bootPerf.flush('[PERF:BOOT] startup sequence complete');
 
   let isShuttingDown = false;
   let server: ReturnType<ReturnType<typeof createServer>['listen']>;

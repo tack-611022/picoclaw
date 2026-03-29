@@ -139,6 +139,18 @@
                       }
                     }
                   }
+                },
+                "withMcpContext": {
+                  "value": {
+                    "message": "\u67e5\u8be2\u6211\u7684\u8d26\u6237\u4f59\u989d",
+                    "mcp_context": {
+                      "finance": {
+                        "headers": {
+                          "Authorization": "Bearer user-token-abc123"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -1150,6 +1162,36 @@
                   }
                 }
               ]
+            }
+          },
+          "mcp_context": {
+            "type": "object",
+            "description": "Per-request auth/env context overlaid onto existing MCP server configs. Each key must match a server name from mcp_servers, org-managed servers, or built-in servers. Context is merged after the three-way server merge. Unmatched names produce warnings.",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "headers": {
+                  "type": "object",
+                  "description": "HTTP/SSE headers merged into server config (context values override static). Use for per-user auth tokens or tenant identifiers.",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "env": {
+                  "type": "object",
+                  "description": "stdio env vars merged into server config (context values override static).",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "args": {
+                  "type": "array",
+                  "description": "stdio args appended to existing args array.",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
             }
           }
         }

@@ -1,9 +1,9 @@
 # PicoClaw
 
-[![version](https://img.shields.io/badge/version-1.2.20-blue)](https://github.com/breakcafe/picoclaw/releases)
+[![version](https://img.shields.io/badge/version-1.2.21-blue)](https://github.com/breakcafe/picoclaw/releases)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org/)
-[![sdk](https://img.shields.io/badge/claude--agent--sdk-0.2.74-purple)](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)
+[![sdk](https://img.shields.io/badge/claude--agent--sdk-0.2.86-purple)](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)
 
 Serverless-first Claude Agent runtime. Request-driven HTTP API with persistent memory, multi-turn conversations, and scheduled tasks.
 

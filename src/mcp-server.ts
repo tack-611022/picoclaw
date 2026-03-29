@@ -1,3 +1,17 @@
+/**
+ * Stdio MCP server for the built-in picoclaw tools.
+ *
+ * This file is used in two modes:
+ * 1. As a subprocess spawned by the SDK CLI (legacy stdio transport)
+ * 2. Kept as a standalone executable for backward compatibility and testing
+ *
+ * In production, PicoClaw now uses the in-process MCP server (src/mcp-inprocess.ts)
+ * by default. This stdio variant is retained for:
+ * - Docker/external scenarios that need PICOCLAW_MCP_SERVER_PATH override
+ * - Independent MCP server testing
+ * - Backward compatibility with older deployments
+ */
+
 import Database from 'better-sqlite3';
 import { CronExpressionParser } from 'cron-parser';
 import { randomUUID } from 'crypto';
@@ -51,6 +65,9 @@ function ensureConversationExists(id: string): void {
   ).run(id, now, now);
 }
 
+// Note: computeNextRun is duplicated here (vs src/task-utils.ts) because
+// this file runs as a standalone subprocess and cannot import from the
+// main PicoClaw module graph (which requires db.ts initialization).
 function computeNextRun(
   scheduleType: 'cron' | 'interval' | 'once',
   scheduleValue: string,

@@ -45,14 +45,23 @@ Quick-reference for all configuration surfaces. For detailed explanations, see t
 | `OUTBOUND_TTL_DAYS` | `7` | Days to keep delivered outbound messages |
 | `TASK_LOG_RETENTION` | `100` | Max run logs per task |
 
-### MCP Subprocess (set by agent-engine, not user-facing)
+### Performance
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PICOCLAW_DB_PATH` | `/tmp/messages.db` | Shared SQLite path for MCP tools |
-| `PICOCLAW_CONVERSATION_ID` | per-request | Current conversation scope |
-| `PICOCLAW_IS_MAIN` | `1` | Enables cross-conversation task management |
-| `PICOCLAW_MCP_SERVER_PATH` | `dist/mcp-server.js` | Custom MCP server executable |
+| `NODE_COMPILE_CACHE` | `/tmp/node-compile-cache` | V8 bytecode cache directory. Reduces CLI subprocess parse time by ~140ms once warm (Node.js 22+). Set by `entrypoint.sh`; override to disable or relocate. |
+
+### MCP Subprocess (legacy stdio mode, not used by default)
+
+The built-in picoclaw MCP server now runs in-process (`type: 'sdk'`). These env vars
+are only relevant when using the legacy stdio mode via `PICOCLAW_MCP_SERVER_PATH`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PICOCLAW_DB_PATH` | `/tmp/messages.db` | Shared SQLite path for MCP tools (stdio mode) |
+| `PICOCLAW_CONVERSATION_ID` | per-request | Current conversation scope (stdio mode) |
+| `PICOCLAW_IS_MAIN` | `1` | Enables cross-conversation task management (stdio mode) |
+| `PICOCLAW_MCP_SERVER_PATH` | _(unset)_ | When set, forces stdio subprocess mode for the built-in MCP server |
 
 ### Removed
 
@@ -165,6 +174,7 @@ All except `/health` require `Authorization: Bearer <API_TOKEN>`.
 | `show_tool_use` | boolean | `false` | Stream tool invocation events |
 | `model` | string | _(omit recommended)_ | Model override (full ID or short name). Omit to follow CLI default — avoids locking to a specific version |
 | `mcp_servers` | object | — | Per-request MCP servers (see §8) |
+| `mcp_context` | object | — | Per-request auth context for MCP servers (see §8) |
 
 **Not yet exposed:** `max_turns` (turn limit), `max_budget_usd` (budget cap). These exist in the Claude Agent SDK but PicoClaw does not pass them through.
 
@@ -264,6 +274,20 @@ Merge priority (later overrides earlier same-name server): org-managed → built
 | `http` (default) | `url` | `headers` |
 | `sse` | `url` | `headers` |
 | `stdio` | `command` | `args`, `env` |
+
+### Per-request MCP context (`mcp_context`)
+
+`mcp_context` injects per-request auth headers or env vars into existing MCP servers
+without re-defining their full config. Applied after the three-way server merge.
+
+| Field | Applies to | Behavior |
+|---|---|---|
+| `headers` | http/sse | Merged with static headers (context overrides same-key) |
+| `env` | stdio | Merged with static env (context overrides same-key) |
+| `args` | stdio | Appended to existing args |
+
+Warnings are returned for: reserved names (`picoclaw`), non-existent server names,
+type mismatches (e.g., `headers` on stdio). Auth-related headers are scrubbed from logs.
 
 ### Built-in MCP tools
 
@@ -416,6 +440,7 @@ How each setting can be configured:
 | Thinking token cap | — | `max_thinking_tokens` | — |
 | Tool use display | — | `show_tool_use` | — |
 | Dynamic MCP servers | — | `mcp_servers` | — |
+| Dynamic MCP context | — | `mcp_context` | — |
 | Org MCP servers | — | — | `$ORG_DIR/managed-mcp.json` |
 | System prompt override | `SYSTEM_PROMPT_OVERRIDE` | — | — |
 | Org persona | — | — | `$ORG_DIR/CLAUDE.md` |

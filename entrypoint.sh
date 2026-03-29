@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# Enable V8 compile cache — caches bytecode for cli.js (11.5 MB) and other
+# large JS files, reducing per-request CLI subprocess parse time by ~200-400ms.
+# Node.js 22+ feature; harmless no-op on older versions.
+export NODE_COMPILE_CACHE="${NODE_COMPILE_CACHE:-/tmp/node-compile-cache}"
+mkdir -p "${NODE_COMPILE_CACHE}"
+
 MEMORY_DIR="${MEMORY_DIR:-/data/memory}"
 CLAUDE_HOME="/home/node/.claude"
 SESSION_CLAUDE_DIR="${MEMORY_DIR}/.claude"

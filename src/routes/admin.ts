@@ -1,5 +1,6 @@
 import { Request, Response, Router } from 'express';
 
+import { invalidateAgentCache } from '../agent-engine.js';
 import { getSkillsSummary, syncSkills } from '../skills.js';
 
 export function adminRoutes(): Router {
@@ -7,6 +8,7 @@ export function adminRoutes(): Router {
 
   router.post('/reload-skills', (_req: Request, res: Response) => {
     syncSkills();
+    invalidateAgentCache();
     const summary = getSkillsSummary();
     res.json({
       status: 'reloaded',

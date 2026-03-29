@@ -102,6 +102,117 @@ describe('mcp zod compatibility', () => {
   });
 });
 
+describe('mcp picoclaw tool schemas (real tool signatures)', () => {
+  /**
+   * Verify that every picoclaw MCP tool schema registers and validates
+   * correctly with the current @modelcontextprotocol/sdk version.
+   *
+   * This catches two failure modes:
+   *   1. Zod v4 incompatibility (the 1.12.1 _parse regression)
+   *   2. MCP SDK 1.28.0 stricter validation rejecting non-Zod schemas
+   *
+   * Each tool uses the exact same Zod schema shape as src/mcp-server.ts.
+   */
+  async function registerAndCallTool(
+    name: string,
+    description: string,
+    schema: Record<string, unknown>,
+    args: Record<string, unknown>,
+  ): Promise<{ content: unknown[] }> {
+    const server = new McpServer({ name: 'test', version: '0.0.1' });
+
+    server.tool(
+      name,
+      description,
+      schema as Record<string, import('zod').ZodTypeAny>,
+      async (parsed) => ({
+        content: [{ type: 'text' as const, text: JSON.stringify(parsed) }],
+      }),
+    );
+
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: 'test-client', version: '0.0.1' });
+    await client.connect(clientTransport);
+
+    const result = await client.callTool({ name, arguments: args });
+
+    await client.close();
+    await server.close();
+
+    return result as { content: unknown[] };
+  }
+
+  it('send_message schema: string + optional string', async () => {
+    const result = await registerAndCallTool(
+      'send_message',
+      'Queue a message',
+      {
+        text: z.string().describe('Message content'),
+        sender: z.string().optional().describe('Optional sender alias'),
+      },
+      { text: 'hello' },
+    );
+    const parsed = JSON.parse((result.content[0] as { text: string }).text);
+    expect(parsed.text).toBe('hello');
+    expect(parsed.sender).toBeUndefined();
+  });
+
+  it('schedule_task schema: string + enum + default', async () => {
+    const result = await registerAndCallTool(
+      'schedule_task',
+      'Create a scheduled task',
+      {
+        prompt: z.string().describe('Prompt to run when task executes'),
+        schedule_type: z.enum(['cron', 'interval', 'once']),
+        schedule_value: z.string(),
+        context_mode: z.enum(['group', 'isolated']).default('isolated'),
+        target_conversation_id: z.string().optional(),
+      },
+      {
+        prompt: 'test',
+        schedule_type: 'once',
+        schedule_value: '2026-01-01T00:00:00',
+      },
+    );
+    const parsed = JSON.parse((result.content[0] as { text: string }).text);
+    expect(parsed.prompt).toBe('test');
+    expect(parsed.context_mode).toBe('isolated');
+  });
+
+  it('list_tasks schema: empty object', async () => {
+    const result = await registerAndCallTool(
+      'list_tasks',
+      'List scheduled tasks',
+      {},
+      {},
+    );
+    expect(result.content).toBeDefined();
+  });
+
+  it('update_task schema: string + multiple optionals', async () => {
+    const result = await registerAndCallTool(
+      'update_task',
+      'Update task prompt and/or schedule',
+      {
+        task_id: z.string(),
+        prompt: z.string().optional(),
+        schedule_type: z.enum(['cron', 'interval', 'once']).optional(),
+        schedule_value: z.string().optional(),
+        context_mode: z.enum(['group', 'isolated']).optional(),
+      },
+      { task_id: 'task-123', prompt: 'updated prompt' },
+    );
+    const parsed = JSON.parse((result.content[0] as { text: string }).text);
+    expect(parsed.task_id).toBe('task-123');
+    expect(parsed.prompt).toBe('updated prompt');
+    expect(parsed.schedule_type).toBeUndefined();
+  });
+});
+
 describe('mcp schedule_task context_mode default', () => {
   it('context_mode defaults to isolated (matching HTTP API and docs)', async () => {
     const server = new McpServer({ name: 'test', version: '0.0.1' });

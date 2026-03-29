@@ -78,6 +78,8 @@ USER node
 ENV NODE_ENV=production
 ENV PORT=9000
 ENV MAX_EXECUTION_MS=300000
+# V8 compile cache — reduces CLI subprocess parse time by ~200-400ms.
+ENV NODE_COMPILE_CACHE=/tmp/node-compile-cache
 
 ARG BUILD_VERSION=unknown
 ARG BUILD_COMMIT=unknown

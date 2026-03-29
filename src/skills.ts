@@ -1,103 +1,11 @@
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 
 import { BUILT_IN_SKILLS_DIR, MEMORY_DIR, SKILLS_DIR } from './config.js';
 import { logger } from './logger.js';
 
 /** User skills directory: always under MEMORY_DIR for volume consolidation. */
 const USER_SKILLS_DIR = path.join(MEMORY_DIR, 'skills');
-const SYNC_STATE_FILE = path.join(MEMORY_DIR, '.claude', 'skills-sync-state.json');
-
-function directoryDigest(dir: string): string {
-  if (!fs.existsSync(dir)) {
-    return 'missing';
-  }
-
-  const hash = crypto.createHash('sha256');
-  const stack = [dir];
-  while (stack.length > 0) {
-    const current = stack.pop() as string;
-    const rel = path.relative(dir, current) || '.';
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(current);
-    } catch {
-      continue;
-    }
-    hash.update(rel);
-    hash.update('|');
-    hash.update(stat.isDirectory() ? 'd' : 'f');
-    hash.update('|');
-    hash.update(String(stat.size));
-    hash.update('|');
-    hash.update(String(Math.floor(stat.mtimeMs)));
-    hash.update('\n');
-
-    if (!stat.isDirectory()) {
-      continue;
-    }
-    const children = fs.readdirSync(current).sort();
-    for (let i = children.length - 1; i >= 0; i--) {
-      stack.push(path.join(current, children[i]));
-    }
-  }
-
-  return hash.digest('hex');
-}
-
-function currentSyncFingerprint(): string {
-  const payload = {
-    builtIn: directoryDigest(BUILT_IN_SKILLS_DIR),
-    org: directoryDigest(SKILLS_DIR),
-    user: directoryDigest(USER_SKILLS_DIR),
-  };
-  return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-}
-
-function readLastSyncFingerprint(): string {
-  if (!fs.existsSync(SYNC_STATE_FILE)) {
-    return '';
-  }
-  try {
-    const raw = JSON.parse(fs.readFileSync(SYNC_STATE_FILE, 'utf-8'));
-    return typeof raw?.fingerprint === 'string' ? raw.fingerprint : '';
-  } catch {
-    return '';
-  }
-}
-
-function writeLastSyncFingerprint(fingerprint: string): void {
-  fs.mkdirSync(path.dirname(SYNC_STATE_FILE), { recursive: true });
-  fs.writeFileSync(
-    SYNC_STATE_FILE,
-    JSON.stringify(
-      {
-        fingerprint,
-        updatedAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
-  );
-}
-
-function hasAnySkillDirectory(dir: string): boolean {
-  if (!fs.existsSync(dir)) {
-    return false;
-  }
-  for (const entry of fs.readdirSync(dir)) {
-    const fullPath = path.join(dir, entry);
-    try {
-      if (fs.statSync(fullPath).isDirectory()) {
-        return true;
-      }
-    } catch {
-      // ignore transient fs errors and continue
-    }
-  }
-  return false;
-}
 
 function syncDirectory(sourceDir: string, destination: string): number {
   if (!fs.existsSync(sourceDir)) {
@@ -211,18 +119,6 @@ export function syncSkills(): void {
   const destination = path.join(MEMORY_DIR, '.claude', 'skills');
   fs.mkdirSync(destination, { recursive: true });
 
-  const currentFingerprint = currentSyncFingerprint();
-  const previousFingerprint = readLastSyncFingerprint();
-  const destinationHasSkills = hasAnySkillDirectory(destination);
-  if (
-    currentFingerprint !== '' &&
-    currentFingerprint === previousFingerprint &&
-    destinationHasSkills
-  ) {
-    logger.info('Skills sync skipped: no source changes detected');
-    return;
-  }
-
   // Persist runtime-created skills before clearing.
   const persistedCount = persistRuntimeSkills(destination);
   if (persistedCount > 0) {
@@ -248,7 +144,6 @@ export function syncSkills(): void {
     { builtIn: builtInCount, org: orgCount, user: userCount },
     'Skills synced to .claude/skills/',
   );
-  writeLastSyncFingerprint(currentFingerprint);
 }
 
 export function getSkillsSummary(): {

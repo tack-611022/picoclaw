@@ -121,7 +121,7 @@
                         "method": "POST",
                         "body": {
                             "mode": "raw",
-                            "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {}\n}",
+                            "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {},\n  \"mcp_context\": {}\n}",
                             "options": {
                                 "raw": {
                                     "headerFamily": "json",
@@ -167,7 +167,7 @@
                                 "method": "POST",
                                 "body": {
                                     "mode": "raw",
-                                    "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {}\n}",
+                                    "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {},\n  \"mcp_context\": {}\n}",
                                     "options": {
                                         "raw": {
                                             "headerFamily": "json",
@@ -223,7 +223,7 @@
                                 "method": "POST",
                                 "body": {
                                     "mode": "raw",
-                                    "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {}\n}",
+                                    "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {},\n  \"mcp_context\": {}\n}",
                                     "options": {
                                         "raw": {
                                             "headerFamily": "json",
@@ -279,7 +279,7 @@
                                 "method": "POST",
                                 "body": {
                                     "mode": "raw",
-                                    "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {}\n}",
+                                    "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {},\n  \"mcp_context\": {}\n}",
                                     "options": {
                                         "raw": {
                                             "headerFamily": "json",
@@ -335,7 +335,7 @@
                                 "method": "POST",
                                 "body": {
                                     "mode": "raw",
-                                    "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {}\n}",
+                                    "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {},\n  \"mcp_context\": {}\n}",
                                     "options": {
                                         "raw": {
                                             "headerFamily": "json",
@@ -391,7 +391,7 @@
                                 "method": "POST",
                                 "body": {
                                     "mode": "raw",
-                                    "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {}\n}",
+                                    "raw": "{\n  \"message\": \"<string>\",\n  \"conversation_id\": \"<string>\",\n  \"sender\": \"user\",\n  \"sender_name\": \"<string>\",\n  \"stream\": false,\n  \"max_execution_ms\": \"<integer>\",\n  \"thinking\": false,\n  \"max_thinking_tokens\": 10000,\n  \"show_tool_use\": false,\n  \"mcp_servers\": {},\n  \"mcp_context\": {}\n}",
                                     "options": {
                                         "raw": {
                                             "headerFamily": "json",

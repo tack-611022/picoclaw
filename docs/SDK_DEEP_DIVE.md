@@ -1,6 +1,6 @@
 # Claude Agent SDK Deep Dive
 
-Findings from reverse-engineering `@anthropic-ai/claude-agent-sdk` v0.2.29–0.2.34 to understand how `query()` works, why agent teams subagents were being killed, and how to fix it. Supplemented with official SDK reference docs.
+Findings from reverse-engineering `@anthropic-ai/claude-agent-sdk` v0.2.29–0.2.86 to understand how `query()` works, why agent teams subagents were being killed, and how to fix it. Supplemented with official SDK reference docs.
 
 ## Architecture
 
@@ -95,6 +95,7 @@ Full `Options` type from the official docs:
 | `settingSources` | `SettingSource[]` | `[]` (none) | Which filesystem settings to load. Must include `'project'` to load CLAUDE.md |
 | `stderr` | `(data: string) => void` | `undefined` | Callback for stderr output |
 | `systemPrompt` | `string \| { type: 'preset'; preset: 'claude_code'; append?: string }` | `undefined` | System prompt. Use preset to get Claude Code's prompt, with optional `append` |
+| `taskBudget` | `{ total: number }` | `undefined` | API-side task budget in tokens (alpha). Model is aware of remaining budget to pace tool use |
 | `tools` | `string[] \| { type: 'preset'; preset: 'claude_code' }` | `undefined` | Tool configuration |
 
 ### PermissionMode
@@ -124,6 +125,7 @@ type AgentDefinition = {
   tools?: string[]; // Allowed tools (inherits all if omitted)
   prompt: string; // Agent's system prompt
   model?: 'sonnet' | 'opus' | 'haiku' | 'inherit';
+  initialPrompt?: string; // Auto-submitted as first user turn (main thread agent only)
 };
 ```
 
@@ -169,7 +171,7 @@ type PermissionResult =
 
 ## SDKMessage Types
 
-`query()` can yield 16 message types. The official docs show a simplified union of 7, but `sdk.d.ts` has the full set:
+`query()` can yield 18 message types. The official docs show a simplified union of 7, but `sdk.d.ts` has the full set:
 
 | Type | Subtype | Purpose |
 |---|---|---|
@@ -181,6 +183,8 @@ type PermissionResult =
 | `system` | `hook_progress` | Hook progress output |
 | `system` | `hook_response` | Hook completed |
 | `system` | `files_persisted` | Files saved |
+| `system` | `api_retry` | API request failed with retryable error, will retry (added 0.2.78) |
+| `system` | `session_state_changed` | Session state change notification (added 0.2.83) |
 | `assistant` | — | Claude's response (text + tool calls) |
 | `user` | — | User message (internal) |
 | `user` (replay) | — | Replayed user message on resume |
@@ -259,6 +263,7 @@ type SDKSystemMessage = {
   uuid: UUID;
   session_id: string;
   apiKeySource: ApiKeySource;
+  apiProvider: 'firstParty' | 'bedrock' | 'vertex' | 'foundry'; // Added 0.2.86
   cwd: string;
   tools: string[];
   mcp_servers: { name: string; status: string }[];
@@ -488,10 +493,15 @@ type HookEvent =
   | 'SessionStart' // Session started (startup/resume/clear/compact)
   | 'SessionEnd' // Session ended
   | 'Stop' // Agent stopping
+  | 'StopFailure' // Turn ended due to API error (added 0.2.78)
   | 'SubagentStart' // Subagent spawned
   | 'SubagentStop' // Subagent stopped
   | 'PreCompact' // Before conversation compaction
-  | 'PermissionRequest'; // Permission being requested
+  | 'PostCompact' // After compaction completes (added 0.2.76)
+  | 'PermissionRequest' // Permission being requested
+  | 'TaskCreated' // Task created via TaskCreate (added 0.2.84)
+  | 'CwdChanged' // Working directory changed (added 0.2.83)
+  | 'FileChanged'; // Watched file changed (added 0.2.83)
 ```
 
 ### Hook Configuration
@@ -570,6 +580,10 @@ interface Query extends AsyncGenerator<SDKMessage, void> {
   supportedModels(): Promise<ModelInfo[]>; // Available models
   mcpServerStatus(): Promise<McpServerStatus[]>; // MCP server connection status
   accountInfo(): Promise<AccountInfo>; // Authenticated user info
+  applyFlagSettings(settings: Settings): Promise<void>; // Merge settings mid-session (added 0.2.83)
+  getContextUsage(): Promise<SDKControlGetContextUsageResponse>; // Context window usage breakdown (added 0.2.83)
+  reloadPlugins(): Promise<SDKControlReloadPluginsResponse>; // Reload plugins from disk (added 0.2.83)
+  seedReadState(path: string, mtime: number): Promise<void>; // Seed CLI read cache for Edit (added 0.2.83)
 }
 ```
 
@@ -579,14 +593,27 @@ Found in sdk.d.ts but NOT in official docs (may be internal):
 - `close()` — forcefully end the query
 - `setMcpServers(servers)` — dynamically add/remove MCP servers
 
+### Exported Session Functions (added 0.2.83+)
+
+```typescript
+function forkSession(sessionId: string, options?: ForkSessionOptions): Promise<ForkSessionResult>;
+function getSessionInfo(sessionId: string, options?: GetSessionInfoOptions): Promise<SessionInfo>;
+function tagSession(sessionId: string, tag: string | null, options?: { cwd?: string }): Promise<void>;
+```
+
 ## Sandbox Configuration
 
 ```typescript
 type SandboxSettings = {
   enabled?: boolean;
+  failIfUnavailable?: boolean; // Added 0.2.86
   autoAllowBashIfSandboxed?: boolean;
   excludedCommands?: string[];
   allowUnsandboxedCommands?: boolean;
+  filesystem?: { // Added 0.2.86
+    allowRead?: string[];
+    allowManagedReadPathsOnly?: boolean;
+  };
   network?: {
     allowLocalBinding?: boolean;
     allowUnixSockets?: string[];
@@ -663,7 +690,9 @@ function createSdkMcpServer(options: {
 
 ## Key Files
 
-- `sdk.d.ts` — All type definitions (1777 lines)
+- `sdk.d.ts` — All type definitions
 - `sdk-tools.d.ts` — Tool input schemas
-- `sdk.mjs` — SDK runtime (minified, 376KB)
+- `sdk.mjs` — SDK runtime (minified)
 - `cli.js` — CLI executable (minified, runs as subprocess)
+- `bridge.d.ts` / `bridge.mjs` — Bridge transport for claude.ai Remote Control (alpha, added 0.2.86)
+- `browser-sdk.d.ts` / `browser-sdk.js` — Browser-compatible SDK via WebSocket (added 0.2.86)

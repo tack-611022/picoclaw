@@ -237,3 +237,103 @@ describe('validateSingleMcpServer', () => {
     expect(result.reason).toContain('websocket');
   });
 });
+
+describe('validateSingleMcpContext', () => {
+  async function getValidator() {
+    const mod = await import('./managed-mcp.js');
+    return mod.validateSingleMcpContext;
+  }
+
+  it('returns valid context with headers only', async () => {
+    const validate = await getValidator();
+    const result = validate({
+      headers: { Authorization: 'Bearer tok', 'X-Tenant': 'abc' },
+    });
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.context.headers).toEqual({
+        Authorization: 'Bearer tok',
+        'X-Tenant': 'abc',
+      });
+      expect(result.context.env).toBeUndefined();
+      expect(result.context.args).toBeUndefined();
+    }
+  });
+
+  it('returns valid context with env only', async () => {
+    const validate = await getValidator();
+    const result = validate({ env: { USER_TOKEN: 'secret' } });
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.context.env).toEqual({ USER_TOKEN: 'secret' });
+    }
+  });
+
+  it('returns valid context with args only', async () => {
+    const validate = await getValidator();
+    const result = validate({ args: ['--user=u1'] });
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.context.args).toEqual(['--user=u1']);
+    }
+  });
+
+  it('returns valid context with all three fields', async () => {
+    const validate = await getValidator();
+    const result = validate({
+      headers: { 'X-Key': 'val' },
+      env: { FOO: 'bar' },
+      args: ['--flag'],
+    });
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.context.headers).toEqual({ 'X-Key': 'val' });
+      expect(result.context.env).toEqual({ FOO: 'bar' });
+      expect(result.context.args).toEqual(['--flag']);
+    }
+  });
+
+  it('rejects non-object input', async () => {
+    const validate = await getValidator();
+
+    const r1 = validate('string');
+    expect(r1.valid).toBe(false);
+    if (!r1.valid) expect(r1.reason).toContain('expected an object');
+
+    const r2 = validate(null);
+    expect(r2.valid).toBe(false);
+    if (!r2.valid) expect(r2.reason).toContain('null');
+
+    const r3 = validate([1, 2]);
+    expect(r3.valid).toBe(false);
+    if (!r3.valid) expect(r3.reason).toContain('array');
+  });
+
+  it('rejects headers when not an object', async () => {
+    const validate = await getValidator();
+    const result = validate({ headers: 'invalid' });
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toContain('headers');
+  });
+
+  it('rejects env when not an object', async () => {
+    const validate = await getValidator();
+    const result = validate({ env: [1, 2] });
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toContain('env');
+  });
+
+  it('rejects args when not an array', async () => {
+    const validate = await getValidator();
+    const result = validate({ args: 'not-array' });
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toContain('args');
+  });
+
+  it('rejects empty context (no fields)', async () => {
+    const validate = await getValidator();
+    const result = validate({});
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toContain('at least one');
+  });
+});

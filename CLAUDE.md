@@ -68,8 +68,11 @@ src/routes/task.ts    → task CRUD + POST /task/trigger + POST /task/check
 src/routes/admin.ts   → POST /admin/reload-skills, GET /admin/skills
 src/routes/control.ts → POST /control/stop (graceful shutdown)
 src/conversation-lock.ts → per-conversation mutex (prevents concurrent agent execution)
+src/perf.ts           → PerfTrace class for structured debug-level performance logging
 src/agent-engine.ts   → Claude Agent SDK query() wrapper, hooks, timeout via AbortController
-src/mcp-server.ts     → MCP tools (send_message, schedule_task, etc.) backed by SQLite
+src/mcp-inprocess.ts  → In-process MCP server (type: 'sdk') — built-in picoclaw tools, no subprocess
+src/mcp-server.ts     → Stdio MCP server (legacy) — same tools, runs as standalone subprocess
+src/task-utils.ts     → Shared task scheduling utilities (computeNextRun, validateTaskOwnership)
 src/db.ts             → SQLite schema, CRUD operations, dual-path sync
 src/skills.ts         → skill directory sync + .claude/settings.json bootstrap
 src/config.ts         → all env var defaults
@@ -119,9 +122,10 @@ The two-pass skill sync (entrypoint.sh + index.ts) is intentionally redundant: e
 - `scheduled_tasks` — id, conversation_id (FK), prompt, schedule_type/value, context_mode, next_run, status
 - `task_run_logs` — task_id (FK), run_at, duration_ms, status, result, error
 
-### MCP tools (defined in `src/mcp-server.ts`)
+### MCP tools (defined in `src/mcp-inprocess.ts`)
 
-The MCP server runs as a stdio subprocess. Tools share the SQLite DB:
+The built-in picoclaw MCP server runs in-process (`type: 'sdk'`), sharing the
+main PicoClaw database connection via `db.ts` imports. Tools:
 
 - `send_message` — queue message for HTTP caller during agent execution
 - `schedule_task` — create cron/interval/once task
@@ -230,6 +234,41 @@ The agent will see tools from all configured MCP servers. Tool names follow the
 pattern `mcp__<server_name>__<tool_name>` — so the example above exposes
 `mcp__finance__*` tools alongside the built-in `mcp__picoclaw__*` tools.
 
+### Dynamic MCP context (per-request auth)
+
+`POST /chat` accepts an optional `mcp_context` field that injects per-request
+auth headers, env vars, or args into existing MCP servers. Context is applied
+after the three-way merge — it works with org-managed, per-request, and
+built-in servers (except `picoclaw`, which is protected).
+
+| Field | Applies to | Behavior |
+|---|---|---|
+| `headers` | http/sse servers | Merged with static headers (context overrides same-key) |
+| `env` | stdio servers | Merged with static env (context overrides same-key) |
+| `args` | stdio servers | Appended to existing args array |
+
+Example request with per-user auth context:
+
+```json
+{
+  "message": "查询我的订单",
+  "mcp_context": {
+    "finance": {
+      "headers": {
+        "Authorization": "Bearer user-token-123",
+        "X-Tenant-Id": "tenant-abc"
+      }
+    }
+  }
+}
+```
+
+Warning cases:
+- Server name not found after merge -> warning (context ignored)
+- Reserved name `picoclaw` -> warning (context ignored)
+- Type mismatch (headers for stdio, env for http) -> warning per mismatched field
+- Auth-related headers (`Authorization`, `X-Api-Key`, etc.) are scrubbed from debug logs
+
 ## Non-Negotiable Principles
 
 1. **Memory and conversation history are core** — never treat as optional. Cross-request
@@ -239,8 +278,8 @@ pattern `mcp__<server_name>__<tool_name>` — so the example above exposes
    SDK session state lives at `$MEMORY_DIR/.claude/` (no separate `SESSIONS_DIR`).
 3. **Graceful stop must sync data** — both `POST /control/stop` and `SIGTERM`/`SIGINT`
    trigger `syncDatabaseToVolume()` → `closeDatabase()` → exit.
-4. **SDK version alignment** — `@anthropic-ai/claude-agent-sdk`: `0.2.74`,
-   `@modelcontextprotocol/sdk`: `1.27.1`. Do not downgrade.
+4. **SDK version alignment** — `@anthropic-ai/claude-agent-sdk`: `0.2.86`,
+   `@modelcontextprotocol/sdk`: `1.28.0`. Do not downgrade.
 5. **Dual-DB sync is the only safe write path** — never write directly to
    `/data/store/messages.db`. Always operate on `/tmp/messages.db` and let sync copy it.
 
@@ -273,6 +312,19 @@ pattern `mcp__<server_name>__<tool_name>` — so the example above exposes
 | `OUTBOUND_TTL_DAYS` | `7` | Days to keep delivered outbound messages before cleanup |
 | `TASK_LOG_RETENTION` | `100` | Max task run logs kept per task (oldest pruned on sync) |
 
+## Performance Debug Logging
+
+Set `LOG_LEVEL=debug` to enable structured performance traces. Three scopes:
+
+| Tag | Source file | What it measures |
+|---|---|---|
+| `[PERF:BOOT]` | `src/index.ts` | Startup sequence: dirs, DB init, skills sync, MCP load |
+| `[PERF:AGENT]` | `src/agent-engine.ts` | Per-request agent lifecycle: pre-query setup, sdkInit, firstTextDelta, sdkResult |
+| `[PERF:DB]` | `src/db.ts` | Database sync: cleanup, WAL checkpoint, file copy |
+
+Each trace is a single JSON log entry with `scope`, `totalMs`, and a `steps` array.
+Health probe (`GET /health`) logs are also at debug level to avoid log noise.
+
 ## Common Gotchas
 
 - **Reserved MCP server name**: `picoclaw` is reserved for the built-in MCP server.
@@ -284,9 +336,10 @@ pattern `mcp__<server_name>__<tool_name>` — so the example above exposes
   it to `/etc/claude-code/`. Never place files in `/etc/claude-code/`.
 - **ESM `.js` in imports**: TypeScript compiles `.ts` → `.js` but import paths must already
   say `.js`. Forgetting this causes runtime `ERR_MODULE_NOT_FOUND`.
-- **MCP server is a subprocess**: `src/mcp-server.ts` runs as a stdio child process spawned
-  by the SDK, not as part of the main Express server. It shares the SQLite DB via
-  `PICOCLAW_DB_PATH` env var. You cannot import it directly.
+- **Built-in MCP is in-process**: `src/mcp-inprocess.ts` runs in the PicoClaw process
+  (not as a subprocess) using `createSdkMcpServer()` with `type: 'sdk'`. It directly
+  imports `db.ts` functions — no separate SQLite connection. Set
+  `PICOCLAW_MCP_SERVER_PATH=dist/mcp-server.js` to fall back to stdio subprocess mode.
 - **Dual-DB sync**: Runtime operates on `/tmp/messages.db` (fast local). Every HTTP response
   triggers `syncDatabaseToVolume()` which does `wal_checkpoint(TRUNCATE)` + file copy to
   `STORE_DIR`. Never write directly to the volume path.
@@ -309,7 +362,7 @@ pattern `mcp__<server_name>__<tool_name>` — so the example above exposes
   SDK's auto-memory path to `/data/memory/` as a forward-compatibility measure, but the
   feature is currently inert. Cross-session memory must be implemented in the persona
   (`CLAUDE.md`) by instructing the agent to read/write files in `/data/memory/` explicitly.
-- **Zod v4 + MCP SDK**: `@modelcontextprotocol/sdk@1.27.1` supports `zod ^3.25 || ^4.0`,
+- **Zod v4 + MCP SDK**: `@modelcontextprotocol/sdk@1.28.0` supports `zod ^3.25 || ^4.0`,
   so MCP tool schemas in `src/mcp-server.ts` use the standard `import { z } from 'zod'`
   (v4). If the MCP SDK is ever downgraded below 1.27.1, MCP tools with parameters will
   break at runtime with `keyValidator._parse is not a function` because older SDK versions

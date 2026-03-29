@@ -56,8 +56,12 @@ export function createServer(
           totalCostUsd: usage.totalCostUsd,
         }),
       };
+      // Health probes log at debug to avoid flooding production logs
+      const isHealthProbe = req.originalUrl === '/health';
       if (res.statusCode >= 500) {
         logger.warn(entry, 'Request completed');
+      } else if (isHealthProbe) {
+        logger.debug(entry, 'Request completed');
       } else {
         logger.info(entry, 'Request completed');
       }

@@ -296,6 +296,40 @@ If `type` is omitted, it defaults to `http`. Invalid entries produce a `warnings
   (the per-request config takes precedence for that request only).
 - Merge priority: org-managed → built-in `picoclaw` (protected) → per-request (highest).
 
+## Dynamic MCP Context (Per-Request Auth)
+
+When MCP servers are pre-configured (via org `managed-mcp.json` or `mcp_servers`), use `mcp_context` to inject per-user auth tokens without re-defining the server config:
+
+```bash
+curl -X POST http://localhost:9000/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "查询我的订单",
+    "mcp_context": {
+      "finance": {
+        "headers": {
+          "Authorization": "Bearer user-specific-token",
+          "X-Tenant-Id": "tenant-abc"
+        }
+      },
+      "data-tool": {
+        "env": { "USER_TOKEN": "secret-xyz" }
+      }
+    }
+  }'
+```
+
+Context is merged after the three-way server merge, so it works with servers from any source.
+
+| Field | Applies to | Behavior |
+|---|---|---|
+| `headers` | http/sse servers | Merged with static headers (context overrides same-key) |
+| `env` | stdio servers | Merged with static env (context overrides same-key) |
+| `args` | stdio servers | Appended to existing args array |
+
+Warnings are returned for: reserved server names, non-existent server names, and type mismatches (e.g., `headers` for a stdio server).
+
 ## Scheduled Tasks
 
 ### Create a task
@@ -476,6 +510,7 @@ The `status` field in chat responses can be:
 | `max_thinking_tokens` | number | No | Max thinking tokens (default: 10000, only when `thinking=true`) |
 | `show_tool_use` | boolean | No | Stream tool invocation events (default: false) |
 | `mcp_servers` | object | No | Per-request MCP servers (HTTP/SSE/stdio transports) |
+| `mcp_context` | object | No | Per-request auth context for MCP servers (headers/env/args) |
 
 ### POST /task
 

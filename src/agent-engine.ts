@@ -7,6 +7,7 @@ import {
   PreToolUseHookInput,
   query,
 } from '@anthropic-ai/claude-agent-sdk';
+import type { McpServerConfig as SdkMcpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 
 import {
   ASSISTANT_NAME,
@@ -22,11 +23,15 @@ import {
 } from './config.js';
 import { logger } from './logger.js';
 import { getManagedMcpServers } from './managed-mcp.js';
+import { createPicoClawMcpServer } from './mcp-inprocess.js';
+import { createPerfTrace } from './perf.js';
 import { AgentUsage } from './types.js';
 
 /**
  * MCP server configuration for stdio, SSE, or HTTP transports.
- * Maps directly to the Claude Agent SDK McpServerConfig type.
+ * This type covers configs accepted via the public HTTP API (POST /chat mcp_servers).
+ * Internally, PicoClaw also uses `type: 'sdk'` for the built-in picoclaw server
+ * (via SdkMcpServerConfig from the SDK), but that is not exposed to callers.
  */
 export type McpServerConfig =
   | {
@@ -38,21 +43,17 @@ export type McpServerConfig =
   | { type: 'sse'; url: string; headers?: Record<string, string> }
   | { type: 'http'; url: string; headers?: Record<string, string> };
 
-export interface McpRuntimeContext {
-  /** Business session id used by MCP server auth middleware (maps to arguments.user_id). */
-  sessionId?: string;
-  /** Optional default ledger id injected for ledger-aware MCP tools. */
-  ledgerId?: string;
-  /** Optional region context for MCP tools that support region input. */
-  region?: string;
-  /** Injected into all MCP tool calls (applied after built-in injected keys). */
-  mcpToolArgs?: Record<string, unknown>;
-  /**
-   * Per-tool argument injection.
-   * Key can be full tool name (e.g. mcp__kapi__query_expenses)
-   * or short tool suffix (e.g. query_expenses).
-   */
-  mcpToolArgsByTool?: Record<string, Record<string, unknown>>;
+/**
+ * Per-request context overlay for an MCP server.
+ * Applied after the three-way merge to inject dynamic auth headers or env vars.
+ */
+export interface McpServerContext {
+  /** HTTP/SSE headers — merged into server config (context overrides static). */
+  headers?: Record<string, string>;
+  /** stdio env vars — merged into server config (context overrides static). */
+  env?: Record<string, string>;
+  /** stdio args — appended to existing args array. */
+  args?: string[];
 }
 
 export interface AgentRunInput {
@@ -69,8 +70,8 @@ export interface AgentRunInput {
   model?: string;
   /** Per-request MCP servers merged with the built-in picoclaw server. */
   mcpServers?: Record<string, McpServerConfig>;
-  /** Structured context for MCP tool argument injection. */
-  mcpContext?: McpRuntimeContext;
+  /** Per-request auth/env context overlaid onto MCP server configs. */
+  mcpContext?: Record<string, McpServerContext>;
 }
 
 export interface AgentRunOutput {
@@ -81,6 +82,8 @@ export interface AgentRunOutput {
   model?: string;
   error?: string;
   usage?: AgentUsage;
+  /** Warnings from MCP context merge (server not found, type mismatches). */
+  contextWarnings?: string[];
 }
 
 export interface StreamCallbacks {
@@ -171,6 +174,124 @@ const SECRET_ENV_VARS = [
   'API_TOKEN',
 ];
 
+const SENSITIVE_HEADER_PATTERNS = [
+  /^authorization$/i,
+  /^x-api-key$/i,
+  /^x-auth-token$/i,
+  /^cookie$/i,
+  /^proxy-authorization$/i,
+];
+
+function isSensitiveHeader(name: string): boolean {
+  return SENSITIVE_HEADER_PATTERNS.some((pattern) => pattern.test(name));
+}
+
+function scrubHeaders(headers: Record<string, string>): Record<string, string> {
+  const scrubbed: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    scrubbed[key] = isSensitiveHeader(key) ? '[REDACTED]' : value;
+  }
+  return scrubbed;
+}
+
+/**
+ * Apply per-request MCP context overlays onto merged server configs.
+ * Returns the updated configs and any warnings produced during the merge.
+ */
+function applyMcpContext(
+  servers: Record<string, McpServerConfig>,
+  context: Record<string, McpServerContext>,
+): { merged: Record<string, McpServerConfig>; warnings: string[] } {
+  const warnings: string[] = [];
+  const merged: Record<string, McpServerConfig> = {};
+  for (const [name, cfg] of Object.entries(servers)) {
+    merged[name] = { ...cfg };
+  }
+
+  for (const [name, ctx] of Object.entries(context)) {
+    if (name === 'picoclaw') {
+      warnings.push(
+        `mcp_context: '${name}' targets the built-in picoclaw server and was ignored`,
+      );
+      continue;
+    }
+
+    const server = merged[name];
+    if (!server) {
+      warnings.push(
+        `mcp_context: '${name}' does not match any configured MCP server and was ignored`,
+      );
+      continue;
+    }
+
+    const isStdio = 'command' in server;
+
+    if (ctx.headers) {
+      if (!isStdio) {
+        const httpServer = server as {
+          type: 'http' | 'sse';
+          url: string;
+          headers?: Record<string, string>;
+        };
+        merged[name] = {
+          ...httpServer,
+          headers: { ...httpServer.headers, ...ctx.headers },
+        };
+      } else {
+        warnings.push(
+          `mcp_context: '${name}' has headers but server is stdio — headers ignored`,
+        );
+      }
+    }
+
+    if (ctx.env) {
+      if (isStdio) {
+        const stdioServer = merged[name] as {
+          type?: 'stdio';
+          command: string;
+          args?: string[];
+          env?: Record<string, string>;
+        };
+        merged[name] = {
+          ...stdioServer,
+          env: { ...stdioServer.env, ...ctx.env },
+        };
+      } else {
+        const serverType = (server as { type?: string }).type || 'http';
+        warnings.push(
+          `mcp_context: '${name}' has env but server is ${serverType} — env ignored`,
+        );
+      }
+    }
+
+    if (ctx.args && ctx.args.length > 0) {
+      if (isStdio) {
+        const stdioServer = merged[name] as {
+          type?: 'stdio';
+          command: string;
+          args?: string[];
+          env?: Record<string, string>;
+        };
+        merged[name] = {
+          ...stdioServer,
+          args: [...(stdioServer.args || []), ...ctx.args],
+        };
+      } else {
+        const serverType = (server as { type?: string }).type || 'http';
+        warnings.push(
+          `mcp_context: '${name}' has args but server is ${serverType} — args ignored`,
+        );
+      }
+    }
+  }
+
+  return { merged, warnings };
+}
+
+/**
+ * Resolve the path to the stdio MCP server executable.
+ * Used when PICOCLAW_MCP_SERVER_PATH is set (stdio fallback mode).
+ */
 function resolveMcpServerPath(): string {
   const overridePath =
     process.env.PICOCLAW_MCP_SERVER_PATH ||
@@ -357,144 +478,19 @@ function createSanitizeBashHook(): HookCallback {
   };
 }
 
-const LEDGER_AWARE_TOOL_SUFFIXES = new Set([
-  'get_categories',
-  'get_budget_info',
-  'create_record',
-  'query_expenses',
-  'query_incomes',
-  'search_records',
-  'query_record_info',
-  'analyze_expense_categories',
-  'analyze_income_categories',
-  'spending_trend',
-  'compare_budget_vs_actual',
-]);
+// --- Cached filesystem reads (invalidated on skill reload) ---
 
-function getMcpToolSuffix(toolName: string): string {
-  const parts = toolName.split('__');
-  return (parts[parts.length - 1] || '').trim();
-}
-
-function hasOwn(obj: Record<string, unknown>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(obj, key);
-}
-
-function shouldInjectLedgerId(
-  toolName: string,
-  toolInput: Record<string, unknown>,
-): boolean {
-  if (hasOwn(toolInput, 'ledger_id')) {
-    return true;
-  }
-  return LEDGER_AWARE_TOOL_SUFFIXES.has(getMcpToolSuffix(toolName));
-}
-
-function resolvePerToolArgs(
-  context: McpRuntimeContext,
-  toolName: string,
-): Record<string, unknown> | undefined {
-  const all = context.mcpToolArgsByTool;
-  if (!all) {
-    return undefined;
-  }
-
-  if (all[toolName]) {
-    return all[toolName];
-  }
-
-  const suffix = getMcpToolSuffix(toolName);
-  if (suffix && all[suffix]) {
-    return all[suffix];
-  }
-  return undefined;
-}
-
-function createInjectMcpArgsHook(context?: McpRuntimeContext): HookCallback {
-  return async (input) => {
-    if (!context) {
-      return {};
-    }
-
-    const preToolUse = input as PreToolUseHookInput & {
-      tool_name?: string;
-      tool_input?: unknown;
-    };
-    const toolName = (preToolUse.tool_name || '').trim();
-    if (!toolName.startsWith('mcp__')) {
-      return {};
-    }
-
-    const originalInput =
-      preToolUse.tool_input &&
-      typeof preToolUse.tool_input === 'object' &&
-      !Array.isArray(preToolUse.tool_input)
-        ? (preToolUse.tool_input as Record<string, unknown>)
-        : {};
-
-    const updatedInput: Record<string, unknown> = { ...originalInput };
-    let changed = false;
-
-    if (context.ledgerId && shouldInjectLedgerId(toolName, originalInput)) {
-      if (updatedInput.ledger_id !== context.ledgerId) {
-        updatedInput.ledger_id = context.ledgerId;
-        changed = true;
-      }
-    }
-
-    if (context.region && hasOwn(originalInput, 'region')) {
-      if (updatedInput.region !== context.region) {
-        updatedInput.region = context.region;
-        changed = true;
-      }
-    }
-
-    if (context.mcpToolArgs) {
-      for (const [key, value] of Object.entries(context.mcpToolArgs)) {
-        if (value === undefined) {
-          continue;
-        }
-        if (hasOwn(originalInput, key)) {
-          updatedInput[key] = value;
-          changed = true;
-        }
-      }
-    }
-
-    const perToolArgs = resolvePerToolArgs(context, toolName);
-    if (perToolArgs) {
-      for (const [key, value] of Object.entries(perToolArgs)) {
-        if (value === undefined) {
-          continue;
-        }
-        updatedInput[key] = value;
-        changed = true;
-      }
-    }
-
-    // Enforce MCP auth source of truth: user_id must always come from sessionId.
-    // This prevents placeholders like "{{user_id}}" in mcp_tool_args from overriding it.
-    if (context.sessionId && updatedInput.user_id !== context.sessionId) {
-      updatedInput.user_id = context.sessionId;
-      changed = true;
-    }
-
-    if (!changed) {
-      return {};
-    }
-
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        updatedInput,
-      },
-    };
-  };
-}
+let cachedOrgClaudeMd: string | undefined | null = null; // null = not loaded
+let cachedAdditionalDirs: string[] | null = null;
 
 function discoverAdditionalDirectories(): string[] {
+  if (cachedAdditionalDirs !== null) {
+    return cachedAdditionalDirs;
+  }
+
   if (!fs.existsSync(SKILLS_DIR)) {
-    return [];
+    cachedAdditionalDirs = [];
+    return cachedAdditionalDirs;
   }
 
   const discovered: string[] = [];
@@ -504,20 +500,37 @@ function discoverAdditionalDirectories(): string[] {
       discovered.push(fullPath);
     }
   }
+  cachedAdditionalDirs = discovered;
   return discovered;
 }
 
 function loadOrgClaudeMd(): string | undefined {
+  if (cachedOrgClaudeMd !== null) {
+    return cachedOrgClaudeMd || undefined;
+  }
+
   if (!ORG_DIR) {
+    cachedOrgClaudeMd = '';
     return undefined;
   }
 
   const orgClaudeMdPath = path.join(ORG_DIR, 'CLAUDE.md');
   if (!fs.existsSync(orgClaudeMdPath)) {
+    cachedOrgClaudeMd = '';
     return undefined;
   }
 
-  return fs.readFileSync(orgClaudeMdPath, 'utf-8');
+  cachedOrgClaudeMd = fs.readFileSync(orgClaudeMdPath, 'utf-8');
+  return cachedOrgClaudeMd;
+}
+
+/**
+ * Invalidate cached filesystem reads. Call after skill reload or
+ * config changes that affect org CLAUDE.md or skill directories.
+ */
+export function invalidateAgentCache(): void {
+  cachedOrgClaudeMd = null;
+  cachedAdditionalDirs = null;
 }
 
 export class AgentEngine implements AgentRunner {
@@ -527,6 +540,11 @@ export class AgentEngine implements AgentRunner {
       | StreamCallbacks
       | ((text: string) => Promise<void> | void),
   ): Promise<AgentRunOutput> {
+    const perf = createPerfTrace('agentRun', {
+      conversationId: input.conversationId,
+      hasResume: Boolean(input.sessionId),
+      isScheduledTask: input.isScheduledTask === true,
+    });
     const callbacks: StreamCallbacks =
       typeof callbacksOrOnChunk === 'function'
         ? { onChunk: callbacksOrOnChunk }
@@ -545,6 +563,9 @@ export class AgentEngine implements AgentRunner {
     let lastResult: string | null = null;
     let lastStreamedLength = 0;
     let usage: AgentUsage | undefined;
+    let contextWarnings: string[] = [];
+    let sawFirstTextDelta = false;
+    let sawFirstThinkingDelta = false;
 
     try {
       const sdkEnv: Record<string, string | undefined> = {
@@ -554,16 +575,17 @@ export class AgentEngine implements AgentRunner {
       // PicoClaw itself is launched inside a Claude Code session
       // (e.g. during local development with `npm run dev`).
       delete sdkEnv.CLAUDECODE;
+      perf.mark('prepareSdkEnv');
 
       const orgClaudeMd = loadOrgClaudeMd();
-      const additionalDirectories = discoverAdditionalDirectories();
-      const mcpServerPath = resolveMcpServerPath();
+      perf.mark('loadOrgClaudeMd', {
+        bytes: orgClaudeMd ? orgClaudeMd.length : 0,
+      });
 
-      if (!fs.existsSync(mcpServerPath)) {
-        throw new Error(
-          `MCP server not found at ${mcpServerPath}. Run npm run build first.`,
-        );
-      }
+      const additionalDirectories = discoverAdditionalDirectories();
+      perf.mark('discoverAdditionalDirs', {
+        count: additionalDirectories.length,
+      });
 
       const prompt = input.isScheduledTask
         ? `[SCHEDULED TASK]\n${input.prompt}`
@@ -571,11 +593,15 @@ export class AgentEngine implements AgentRunner {
       const promptStream = new MessageStream();
       promptStream.push(prompt);
       promptStream.end();
+      perf.mark('preparePromptStream', { promptChars: prompt.length });
 
       // Three-way MCP server merge: org-managed → built-in picoclaw → per-request.
       // Managed servers are loaded programmatically (not via CLI auto-discovery)
       // to avoid the enterprise MCP config exclusion that prevents --mcp-config
       // usage when /etc/claude-code/managed-mcp.json exists.
+      //
+      // The built-in picoclaw server uses `type: 'sdk'` (in-process) to eliminate
+      // the stdio subprocess spawn overhead (~100ms per request).
       const managedServers = getManagedMcpServers();
       const perRequestServers = input.mcpServers
         ? Object.fromEntries(
@@ -585,9 +611,20 @@ export class AgentEngine implements AgentRunner {
           )
         : {};
 
-      const mergedMcpServers: Record<string, McpServerConfig> = {
-        ...managedServers,
-        picoclaw: {
+      // Use in-process MCP by default. Fall back to stdio subprocess when
+      // PICOCLAW_MCP_SERVER_PATH is explicitly set (backward compatibility,
+      // Docker scenarios, or A/B performance testing).
+      const useStdioMcp = Boolean(process.env.PICOCLAW_MCP_SERVER_PATH);
+      let picoClawMcpConfig: SdkMcpServerConfig;
+
+      if (useStdioMcp) {
+        const mcpServerPath = resolveMcpServerPath();
+        if (!fs.existsSync(mcpServerPath)) {
+          throw new Error(
+            `MCP server not found at ${mcpServerPath}. Run npm run build first.`,
+          );
+        }
+        picoClawMcpConfig = {
           command: 'node',
           args: [mcpServerPath],
           env: {
@@ -595,23 +632,84 @@ export class AgentEngine implements AgentRunner {
             PICOCLAW_DB_PATH: LOCAL_DB_PATH,
             PICOCLAW_IS_MAIN: '1',
           },
-        },
+        };
+        perf.mark('createStdioMcp');
+      } else {
+        picoClawMcpConfig = createPicoClawMcpServer(input.conversationId, true);
+        perf.mark('createInprocessMcp');
+      }
+
+      let mergedMcpServers: Record<string, SdkMcpServerConfig> = {
+        ...managedServers,
+        picoclaw: picoClawMcpConfig,
         ...perRequestServers,
       };
+      perf.mark('mergeMcpServers', {
+        managedCount: Object.keys(managedServers).length,
+        perRequestCount: Object.keys(perRequestServers).length,
+        totalCount: Object.keys(mergedMcpServers).length,
+      });
+
+      // Apply per-request mcp_context overlays (after three-way merge).
+      // Context overlays only apply to serializable servers (stdio/http/sse),
+      // not to the in-process picoclaw server.
+      if (input.mcpContext) {
+        const applied = applyMcpContext(
+          mergedMcpServers as Record<string, McpServerConfig>,
+          input.mcpContext,
+        );
+        mergedMcpServers = {
+          ...mergedMcpServers,
+          ...applied.merged,
+        };
+        contextWarnings = applied.warnings;
+        perf.mark('applyMcpContext', {
+          overlayCount: Object.keys(input.mcpContext).length,
+        });
+        if (applied.warnings.length > 0) {
+          logger.warn(
+            {
+              conversationId: input.conversationId,
+              warnings: applied.warnings,
+            },
+            'MCP context merge produced warnings',
+          );
+        }
+      }
 
       logger.debug(
         {
           conversationId: input.conversationId,
-          mcpServers: Object.entries(mergedMcpServers).map(([name, cfg]) => ({
-            name,
-            type: ('command' in cfg ? 'stdio' : cfg.type) || 'http',
-            source:
-              name === 'picoclaw'
-                ? 'built-in'
-                : name in perRequestServers
-                  ? 'per-request'
-                  : 'org-managed',
-          })),
+          mcpServers: Object.entries(mergedMcpServers).map(([name, cfg]) => {
+            const typeName =
+              'type' in cfg && cfg.type === 'sdk'
+                ? 'sdk'
+                : 'command' in cfg
+                  ? 'stdio'
+                  : ('type' in cfg && cfg.type) || 'http';
+            return {
+              name,
+              type: typeName,
+              source:
+                name === 'picoclaw'
+                  ? 'built-in (in-process)'
+                  : name in perRequestServers
+                    ? 'per-request'
+                    : 'org-managed',
+              ...('headers' in cfg &&
+              cfg.headers &&
+              typeof cfg.headers === 'object'
+                ? {
+                    headers: scrubHeaders(
+                      cfg.headers as Record<string, string>,
+                    ),
+                  }
+                : {}),
+              hasContextOverlay: input.mcpContext
+                ? name in input.mcpContext
+                : false,
+            };
+          }),
         },
         'MCP servers configured for request',
       );
@@ -638,9 +736,16 @@ export class AgentEngine implements AgentRunner {
         'NotebookEdit',
         ...Object.keys(mergedMcpServers).map((name) => `mcp__${name}__*`),
       ];
+      perf.mark('buildAllowedTools', {
+        count: allowedTools.length,
+      });
 
       const model = input.model || CLAUDE_MODEL || undefined;
       const fallbackModel = CLAUDE_FALLBACK_MODEL || undefined;
+      perf.mark('startSdkQuery', {
+        model: model || '(default)',
+        fallbackModel: fallbackModel || '(none)',
+      });
 
       for await (const message of query({
         prompt: promptStream,
@@ -691,10 +796,6 @@ export class AgentEngine implements AgentRunner {
                 matcher: 'Bash',
                 hooks: [createSanitizeBashHook()],
               },
-              {
-                matcher: 'mcp__*',
-                hooks: [createInjectMcpArgsHook(input.mcpContext)],
-              },
             ],
           },
         },
@@ -702,6 +803,15 @@ export class AgentEngine implements AgentRunner {
         if (message.type === 'system' && message.subtype === 'init') {
           newSessionId = message.session_id;
           actualModel = message.model;
+          perf.mark('sdkInit', {
+            model: message.model,
+            toolCount: Array.isArray(message.tools)
+              ? message.tools.length
+              : undefined,
+            mcpServerCount: Array.isArray(message.mcp_servers)
+              ? message.mcp_servers.length
+              : undefined,
+          });
           logger.debug(
             {
               conversationId: input.conversationId,
@@ -720,6 +830,10 @@ export class AgentEngine implements AgentRunner {
         ) {
           const delta = message.event.delta;
           if (delta?.type === 'text_delta' && delta.text && onChunk) {
+            if (!sawFirstTextDelta) {
+              sawFirstTextDelta = true;
+              perf.mark('firstTextDelta');
+            }
             lastStreamedLength += delta.text.length;
             await onChunk(delta.text);
           }
@@ -728,6 +842,10 @@ export class AgentEngine implements AgentRunner {
             delta.thinking &&
             onThinking
           ) {
+            if (!sawFirstThinkingDelta) {
+              sawFirstThinkingDelta = true;
+              perf.mark('firstThinkingDelta');
+            }
             await onThinking(delta.thinking);
           }
         }
@@ -752,6 +870,10 @@ export class AgentEngine implements AgentRunner {
         }
 
         if (message.type === 'result') {
+          perf.mark('sdkResult', {
+            numTurns: message.num_turns ?? undefined,
+            durationApiMs: message.duration_api_ms ?? undefined,
+          });
           const text =
             typeof message.result === 'string' ? message.result : null;
           if (text) {
@@ -791,6 +913,11 @@ export class AgentEngine implements AgentRunner {
         },
         'Agent execution completed',
       );
+      perf.flush('[PERF:AGENT] execution complete', {
+        status: 'success',
+        model: actualModel || '(unknown)',
+        mcpServerCount: Object.keys(mergedMcpServers).length,
+      });
 
       return {
         status: 'success',
@@ -799,6 +926,7 @@ export class AgentEngine implements AgentRunner {
         lastAssistantUuid,
         model: actualModel,
         usage,
+        ...(contextWarnings.length > 0 && { contextWarnings }),
       };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -812,6 +940,10 @@ export class AgentEngine implements AgentRunner {
           },
           'Agent execution timed out',
         );
+        perf.flush('[PERF:AGENT] execution timed out', {
+          status: 'timeout',
+          timeoutMs,
+        });
         return {
           status: 'timeout',
           result: lastResult,
@@ -820,6 +952,7 @@ export class AgentEngine implements AgentRunner {
           model: actualModel,
           error: `Execution aborted after ${timeoutMs}ms. Use conversation_id to continue.`,
           usage,
+          ...(contextWarnings.length > 0 && { contextWarnings }),
         };
       }
 
@@ -827,6 +960,10 @@ export class AgentEngine implements AgentRunner {
         { conversationId: input.conversationId, err },
         'Agent execution failed',
       );
+      perf.flush('[PERF:AGENT] execution failed', {
+        status: 'error',
+        error: errorMessage,
+      });
       return {
         status: 'error',
         result: lastResult,
@@ -835,6 +972,7 @@ export class AgentEngine implements AgentRunner {
         model: actualModel,
         error: errorMessage,
         usage,
+        ...(contextWarnings.length > 0 && { contextWarnings }),
       };
     } finally {
       clearTimeout(timeoutHandle);
