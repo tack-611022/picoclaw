@@ -501,9 +501,33 @@ function extractKapiSessionID(
   return getHeaderCaseInsensitive(headers, 'X-MCP-Session-Id').trim();
 }
 
+function extractKapiLedgerID(
+  mergedMcpServers: Record<string, SdkMcpServerConfig>,
+): string {
+  const kapi = mergedMcpServers.kapi;
+  if (!kapi || !('headers' in kapi) || !kapi.headers) {
+    return '';
+  }
+  const headers = kapi.headers as Record<string, string>;
+  const candidates = [
+    'X-KAPI-Ledger-Id',
+    'X-Ledger-Id',
+    'X-Kapi-Ledger-Id',
+  ];
+  for (const key of candidates) {
+    const value = getHeaderCaseInsensitive(headers, key).trim();
+    if (value) {
+      return value;
+    }
+  }
+  return '';
+}
+
 function createFillKapiUserIDHook(
   kapiSessionID: string,
   fallbackUserID: string,
+  kapiLedgerID: string,
+  fallbackLedgerID: string,
 ): HookCallback {
   return async (input) => {
     const preToolUse = input as PreToolUseHookInput;
@@ -532,7 +556,10 @@ function createFillKapiUserIDHook(
     }
 
     const rawUserID = toolInput.user_id;
-    if (isValidKapiUserID(rawUserID) && String(rawUserID).trim() !== resolvedUserID) {
+    if (
+      isValidKapiUserID(rawUserID) &&
+      String(rawUserID).trim() !== resolvedUserID
+    ) {
       logger.info(
         {
           tool: preToolUse.tool_name,
@@ -544,13 +571,45 @@ function createFillKapiUserIDHook(
       );
     }
 
+    const resolvedLedgerID = kapiLedgerID || fallbackLedgerID;
+    const hasLedgerField =
+      Object.prototype.hasOwnProperty.call(toolInput, 'ledger_id') ||
+      Object.prototype.hasOwnProperty.call(toolInput, 'ledgerId');
+    if (resolvedLedgerID && hasLedgerField) {
+      const rawLedgerID = Object.prototype.hasOwnProperty.call(
+        toolInput,
+        'ledger_id',
+      )
+        ? toolInput.ledger_id
+        : toolInput.ledgerId;
+      if (String(rawLedgerID ?? '').trim() !== resolvedLedgerID) {
+        logger.info(
+          {
+            tool: preToolUse.tool_name,
+            toolUseId: preToolUse.tool_use_id,
+            fromLedgerID: String(rawLedgerID ?? '').trim(),
+            toLedgerID: resolvedLedgerID,
+          },
+          'Force override kapi ledger_id with trusted identity',
+        );
+      }
+    }
+
+    const mergedInput: Record<string, unknown> = {
+      ...toolInput,
+      user_id: resolvedUserID,
+    };
+    if (resolvedLedgerID && hasLedgerField) {
+      mergedInput.ledger_id = resolvedLedgerID;
+      if (Object.prototype.hasOwnProperty.call(mergedInput, 'ledgerId')) {
+        delete mergedInput.ledgerId;
+      }
+    }
+
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        updatedInput: {
-          ...toolInput,
-          user_id: resolvedUserID,
-        },
+        updatedInput: mergedInput,
       },
     };
   };
@@ -844,6 +903,12 @@ export class AgentEngine implements AgentRunner {
       const fallbackModel = CLAUDE_FALLBACK_MODEL || undefined;
       const kapiSessionID = extractKapiSessionID(mergedMcpServers);
       const fallbackUserID = (process.env.USER_ID || '').trim();
+      const kapiLedgerID = extractKapiLedgerID(mergedMcpServers);
+      const fallbackLedgerID = (
+        process.env.KAPI_LEDGER_ID ||
+        process.env.LEDGER_ID ||
+        ''
+      ).trim();
       perf.mark('startSdkQuery', {
         model: model || '(default)',
         fallbackModel: fallbackModel || '(none)',
@@ -896,7 +961,12 @@ export class AgentEngine implements AgentRunner {
             PreToolUse: [
               {
                 hooks: [
-                  createFillKapiUserIDHook(kapiSessionID, fallbackUserID),
+                  createFillKapiUserIDHook(
+                    kapiSessionID,
+                    fallbackUserID,
+                    kapiLedgerID,
+                    fallbackLedgerID,
+                  ),
                 ],
               },
               {
