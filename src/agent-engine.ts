@@ -519,12 +519,6 @@ function createFillKapiUserIDHook(
     }
 
     const toolInput = preToolUse.tool_input as Record<string, unknown>;
-    const rawUserID = toolInput.user_id;
-    const hasValidUserID = isValidKapiUserID(rawUserID);
-    if (hasValidUserID) {
-      return {};
-    }
-
     const resolvedUserID = kapiSessionID || fallbackUserID;
     if (!resolvedUserID) {
       logger.warn(
@@ -535,6 +529,19 @@ function createFillKapiUserIDHook(
         'Cannot backfill kapi user_id: missing X-MCP-Session-Id and USER_ID fallback',
       );
       return {};
+    }
+
+    const rawUserID = toolInput.user_id;
+    if (isValidKapiUserID(rawUserID) && String(rawUserID).trim() !== resolvedUserID) {
+      logger.info(
+        {
+          tool: preToolUse.tool_name,
+          toolUseId: preToolUse.tool_use_id,
+          fromUserID: String(rawUserID).trim(),
+          toUserID: resolvedUserID,
+        },
+        'Force override kapi user_id with session identity',
+      );
     }
 
     return {
