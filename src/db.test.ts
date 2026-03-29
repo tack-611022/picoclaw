@@ -72,6 +72,36 @@ describe('db', () => {
     });
   });
 
+  it('returns only the latest prompt messages when limit is provided', () => {
+    const paths = createTempPaths();
+    initDatabase({
+      persistentDbPath: paths.persistentPath,
+      localDbPath: paths.localPath,
+      forceReinitialize: true,
+    });
+
+    createConversation('conv-limit');
+    for (let i = 1; i <= 5; i++) {
+      storeConversationMessage({
+        id: `msg-${i}`,
+        conversationId: 'conv-limit',
+        role: i % 2 === 0 ? 'assistant' : 'user',
+        sender: i % 2 === 0 ? 'assistant' : 'user',
+        senderName: i % 2 === 0 ? 'Assistant' : 'User',
+        content: `message-${i}`,
+        createdAt: `2026-03-08T10:00:0${i}.000Z`,
+      });
+    }
+
+    const promptMessages = getPromptMessages('conv-limit', 3);
+    expect(promptMessages.map((m) => m.id)).toEqual(['msg-3', 'msg-4', 'msg-5']);
+    expect(promptMessages.map((m) => m.content)).toEqual([
+      'message-3',
+      'message-4',
+      'message-5',
+    ]);
+  });
+
   it('consumes outbound messages only once', () => {
     const paths = createTempPaths();
     initDatabase({

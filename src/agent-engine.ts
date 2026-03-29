@@ -16,6 +16,7 @@ import {
   LOCAL_DB_PATH,
   MAX_EXECUTION_MS,
   MEMORY_DIR,
+  MCP_SERVER_WHITELIST,
   ORG_DIR,
   SDK_LOG_LEVEL,
   SYSTEM_PROMPT_OVERRIDE,
@@ -509,11 +510,7 @@ function extractKapiLedgerID(
     return '';
   }
   const headers = kapi.headers as Record<string, string>;
-  const candidates = [
-    'X-KAPI-Ledger-Id',
-    'X-Ledger-Id',
-    'X-Kapi-Ledger-Id',
-  ];
+  const candidates = ['X-KAPI-Ledger-Id', 'X-Ledger-Id', 'X-Kapi-Ledger-Id'];
   for (const key of candidates) {
     const value = getHeaderCaseInsensitive(headers, key).trim();
     if (value) {
@@ -613,6 +610,29 @@ function createFillKapiUserIDHook(
       },
     };
   };
+}
+
+function isMcpServerAllowed(name: string): boolean {
+  if (name === 'picoclaw') {
+    return true;
+  }
+  if (MCP_SERVER_WHITELIST.length === 0) {
+    return true;
+  }
+  return MCP_SERVER_WHITELIST.includes(name);
+}
+
+function buildAllowedMcpTools(serverNames: string[]): string[] {
+  const allowed: string[] = [];
+  for (const name of serverNames) {
+    if (name === 'kapi') {
+      allowed.push('mcp__kapi__query_expenses');
+      allowed.push('mcp__kapi__query_incomes');
+      continue;
+    }
+    allowed.push(`mcp__${name}__*`);
+  }
+  return allowed;
 }
 
 // --- Cached filesystem reads (invalidated on skill reload) ---
@@ -761,14 +781,42 @@ export class AgentEngine implements AgentRunner {
       //
       // The built-in picoclaw server uses `type: 'sdk'` (in-process) to eliminate
       // the stdio subprocess spawn overhead (~100ms per request).
-      const managedServers = getManagedMcpServers();
+      const managedServersRaw = getManagedMcpServers();
+      const deniedManagedServerNames = Object.keys(managedServersRaw).filter(
+        (name) => !isMcpServerAllowed(name),
+      );
+      const managedServers = Object.fromEntries(
+        Object.entries(managedServersRaw).filter(([name]) =>
+          isMcpServerAllowed(name),
+        ),
+      );
       const perRequestServers = input.mcpServers
         ? Object.fromEntries(
             Object.entries(input.mcpServers).filter(
-              ([name]) => name !== 'picoclaw',
+              ([name]) => name !== 'picoclaw' && isMcpServerAllowed(name),
             ),
           )
         : {};
+      const deniedPerRequestServerNames = input.mcpServers
+        ? Object.keys(input.mcpServers).filter(
+            (name) => name !== 'picoclaw' && !isMcpServerAllowed(name),
+          )
+        : [];
+
+      if (
+        deniedManagedServerNames.length > 0 ||
+        deniedPerRequestServerNames.length > 0
+      ) {
+        logger.warn(
+          {
+            conversationId: input.conversationId,
+            whitelist: MCP_SERVER_WHITELIST,
+            deniedManaged: deniedManagedServerNames,
+            deniedPerRequest: deniedPerRequestServerNames,
+          },
+          'MCP servers filtered by MCP_SERVER_WHITELIST',
+        );
+      }
 
       // Use in-process MCP by default. Fall back to stdio subprocess when
       // PICOCLAW_MCP_SERVER_PATH is explicitly set (backward compatibility,
@@ -893,7 +941,7 @@ export class AgentEngine implements AgentRunner {
         'ToolSearch',
         'Skill',
         'NotebookEdit',
-        ...Object.keys(mergedMcpServers).map((name) => `mcp__${name}__*`),
+        ...buildAllowedMcpTools(Object.keys(mergedMcpServers)),
       ];
       perf.mark('buildAllowedTools', {
         count: allowedTools.length,

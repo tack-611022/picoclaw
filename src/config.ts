@@ -9,6 +9,14 @@ const parseIntWithDefault = (
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const parseCsvList = (value: string | undefined): string[] => {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+};
+
 export const ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL || '';
 
 export const APP_VERSION = process.env.APP_VERSION || '1.0.0';
@@ -60,6 +68,13 @@ export const TASK_LOG_RETENTION = parseIntWithDefault(
 export const DB_SYNC_DEBOUNCE_MS = parseIntWithDefault(
   process.env.DB_SYNC_DEBOUNCE_MS,
   3000,
+);
+export const PROMPT_MAX_MESSAGES = parseIntWithDefault(
+  process.env.PROMPT_MAX_MESSAGES,
+  20,
+);
+export const MCP_SERVER_WHITELIST = parseCsvList(
+  process.env.MCP_SERVER_WHITELIST || 'picoclaw,kapi',
 );
 
 export const CLAUDE_MODEL = process.env.CLAUDE_MODEL || undefined;

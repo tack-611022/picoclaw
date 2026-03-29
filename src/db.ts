@@ -542,7 +542,43 @@ export function getConversationMessages(
     .all(conversationId) as ConversationMessage[];
 }
 
-export function getPromptMessages(conversationId: string): PromptMessage[] {
+export function getPromptMessages(
+  conversationId: string,
+  maxMessages?: number,
+): PromptMessage[] {
+  const normalizedLimit =
+    typeof maxMessages === 'number' &&
+    Number.isFinite(maxMessages) &&
+    maxMessages > 0
+      ? Math.floor(maxMessages)
+      : 0;
+
+  if (normalizedLimit > 0) {
+    return getDbOrThrow()
+      .prepare(
+        `
+        SELECT id,
+               sender,
+               sender_name,
+               content,
+               timestamp
+        FROM (
+          SELECT id,
+                 COALESCE(sender, role) AS sender,
+                 COALESCE(sender_name, sender, role) AS sender_name,
+                 content,
+                 created_at AS timestamp
+          FROM messages
+          WHERE conversation_id = ?
+          ORDER BY created_at DESC
+          LIMIT ?
+        ) AS recent
+        ORDER BY timestamp ASC
+      `,
+      )
+      .all(conversationId, normalizedLimit) as PromptMessage[];
+  }
+
   return getDbOrThrow()
     .prepare(
       `

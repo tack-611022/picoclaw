@@ -15,6 +15,7 @@ import {
 import {
   ASSISTANT_NAME,
   MAX_EXECUTION_MS,
+  PROMPT_MAX_MESSAGES,
   SESSION_END_MARKER,
   TIMEZONE,
 } from '../config.js';
@@ -209,7 +210,10 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
       content: message,
     });
 
-    const promptMessages = getPromptMessages(conversationId);
+    const promptMessages = getPromptMessages(
+      conversationId,
+      PROMPT_MAX_MESSAGES,
+    );
     const prompt = formatMessages(promptMessages, TIMEZONE);
 
     const executionTimeout = getExecutionTimeout(body.max_execution_ms);
