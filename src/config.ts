@@ -71,7 +71,7 @@ export const DB_SYNC_DEBOUNCE_MS = parseIntWithDefault(
 );
 export const PROMPT_MAX_MESSAGES = parseIntWithDefault(
   process.env.PROMPT_MAX_MESSAGES,
-  20,
+  10,
 );
 export const MCP_SERVER_WHITELIST = parseCsvList(
   process.env.MCP_SERVER_WHITELIST || 'picoclaw,kapi',

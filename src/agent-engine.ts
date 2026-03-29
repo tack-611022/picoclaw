@@ -625,11 +625,6 @@ function isMcpServerAllowed(name: string): boolean {
 function buildAllowedMcpTools(serverNames: string[]): string[] {
   const allowed: string[] = [];
   for (const name of serverNames) {
-    if (name === 'kapi') {
-      allowed.push('mcp__kapi__query_expenses');
-      allowed.push('mcp__kapi__query_incomes');
-      continue;
-    }
     allowed.push(`mcp__${name}__*`);
   }
   return allowed;
