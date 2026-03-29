@@ -74,7 +74,7 @@ export const PROMPT_MAX_MESSAGES = parseIntWithDefault(
   10,
 );
 export const MCP_SERVER_WHITELIST = parseCsvList(
-  process.env.MCP_SERVER_WHITELIST || 'picoclaw,kapi',
+  process.env.MCP_SERVER_WHITELIST || 'picoclaw',
 );
 
 export const CLAUDE_MODEL = process.env.CLAUDE_MODEL || undefined;
