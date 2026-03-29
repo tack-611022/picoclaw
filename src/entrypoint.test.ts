@@ -24,9 +24,23 @@ MEMORY_DIR="${memoryDir}"
 PROJECT_SLUG=$(echo "\${MEMORY_DIR}" | sed 's|/|-|g')
 AUTO_MEMORY_DIR="\${CLAUDE_HOME}/projects/\${PROJECT_SLUG}/memory"
 
-# Skip symlink when AUTO_MEMORY_DIR is inside MEMORY_DIR (merged mode → circular).
-case "\${AUTO_MEMORY_DIR}" in
-  "\${MEMORY_DIR}"/*)
+# Clean up accidental self-referential symlink.
+if [ -L "\${MEMORY_DIR}/memory" ]; then
+  MEMORY_LINK_TARGET="$(readlink "\${MEMORY_DIR}/memory" || true)"
+  if [ "\${MEMORY_LINK_TARGET}" = "\${MEMORY_DIR}" ]; then
+    rm -f "\${MEMORY_DIR}/memory"
+  fi
+fi
+
+# Resolve physical paths before circular check.
+MEMORY_REAL="$(cd "\${MEMORY_DIR}" && pwd -P)"
+AUTO_MEMORY_PARENT="$(dirname "\${AUTO_MEMORY_DIR}")"
+mkdir -p "\${AUTO_MEMORY_PARENT}"
+AUTO_MEMORY_PARENT_REAL="$(cd "\${AUTO_MEMORY_PARENT}" && pwd -P)"
+AUTO_MEMORY_REAL="\${AUTO_MEMORY_PARENT_REAL}/$(basename "\${AUTO_MEMORY_DIR}")"
+
+case "\${AUTO_MEMORY_REAL}" in
+  "\${MEMORY_REAL}"|"\${MEMORY_REAL}"/*)
     ;;  # Skip — would be circular
   *)
     if [ -d "\${AUTO_MEMORY_DIR}" ] && [ ! -L "\${AUTO_MEMORY_DIR}" ]; then
@@ -35,7 +49,6 @@ case "\${AUTO_MEMORY_DIR}" in
       fi
       rm -rf "\${AUTO_MEMORY_DIR}"
     fi
-    mkdir -p "$(dirname "\${AUTO_MEMORY_DIR}")"
     ln -sf "\${MEMORY_DIR}" "\${AUTO_MEMORY_DIR}"
     ;;
 esac
@@ -204,5 +217,38 @@ describe('entrypoint auto-memory symlink', () => {
       'memory',
     );
     expect(fs.existsSync(autoMemoryDir)).toBe(false);
+  });
+
+  it('skips symlink when claude home is a symlink to memory/.claude', () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picoclaw-entrypoint-'));
+    const memoryDir = path.join(tmpDir, 'data', 'memory');
+    const realClaudeHome = path.join(memoryDir, '.claude');
+    const linkedClaudeHome = path.join(tmpDir, 'home', 'node', '.claude');
+    fs.mkdirSync(realClaudeHome, { recursive: true });
+    fs.mkdirSync(path.dirname(linkedClaudeHome), { recursive: true });
+    fs.symlinkSync(realClaudeHome, linkedClaudeHome);
+
+    runScript(autoMemoryScript(linkedClaudeHome, memoryDir));
+
+    const projectSlug = memoryDir.replace(/\//g, '-');
+    const autoMemoryDir = path.join(
+      realClaudeHome,
+      'projects',
+      projectSlug,
+      'memory',
+    );
+    expect(fs.existsSync(autoMemoryDir)).toBe(false);
+  });
+
+  it('removes self-referential memory symlink', () => {
+    const { claudeHome, memoryDir } = setup();
+    fs.symlinkSync(memoryDir, path.join(memoryDir, 'memory'));
+    expect(fs.lstatSync(path.join(memoryDir, 'memory')).isSymbolicLink()).toBe(
+      true,
+    );
+
+    runScript(autoMemoryScript(claudeHome, memoryDir));
+
+    expect(fs.existsSync(path.join(memoryDir, 'memory'))).toBe(false);
   });
 });
