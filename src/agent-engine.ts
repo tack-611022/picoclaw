@@ -874,7 +874,9 @@ export class AgentEngine implements AgentRunner {
             ],
             PreToolUse: [
               {
-                hooks: [createFillKapiUserIDHook(kapiSessionID, fallbackUserID)],
+                hooks: [
+                  createFillKapiUserIDHook(kapiSessionID, fallbackUserID),
+                ],
               },
               {
                 matcher: 'Bash',
