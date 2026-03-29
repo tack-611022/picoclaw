@@ -258,6 +258,32 @@ describe('http server', () => {
     expect(response.body).toHaveProperty('build_time');
   });
 
+  it('skips database sync for health probe responses', async () => {
+    vi.resetModules();
+    process.env.API_TOKEN = 'test-token';
+
+    const requestDatabaseSync = vi.fn();
+    vi.doMock('./db.js', async () => {
+      const actual = await vi.importActual<typeof import('./db.js')>('./db.js');
+      return { ...actual, requestDatabaseSync };
+    });
+
+    const serverModule = await import('./server.js');
+    const mockApp = serverModule.createServer(makeFakeEngine());
+
+    const response = await request(mockApp).get('/health');
+    expect(response.status).toBe(200);
+    expect(requestDatabaseSync).not.toHaveBeenCalled();
+
+    const unauthorized = await request(mockApp).post('/chat').send({
+      message: 'hello',
+    });
+    expect(unauthorized.status).toBe(401);
+    expect(requestDatabaseSync).toHaveBeenCalledTimes(1);
+
+    vi.doUnmock('./db.js');
+  });
+
   it('streams thinking events when thinking=true and stream=true', async () => {
     const thinkingEngine: AgentRunner = {
       async run(_input, callbacksOrOnChunk) {

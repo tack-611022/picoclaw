@@ -23,12 +23,27 @@ const dirs = vi.hoisted(() => {
   // USER_SKILLS_DIR is hardcoded to $MEMORY_DIR/skills (no env var override).
   const userDir = _path.join(memoryDir, 'skills');
   const destination = _path.join(memoryDir, '.claude', 'skills');
+  const statePath = _path.join(
+    memoryDir,
+    '.picoclaw',
+    'skills-sync-state.json',
+  );
+  const orgTokenPath = _path.join(orgDir, '.picoclaw-skills-token');
 
   process.env.BUILT_IN_SKILLS_DIR = builtInDir;
   process.env.SKILLS_DIR = orgDir;
   process.env.MEMORY_DIR = memoryDir;
 
-  return { tmpDir, builtInDir, orgDir, userDir, memoryDir, destination };
+  return {
+    tmpDir,
+    builtInDir,
+    orgDir,
+    userDir,
+    memoryDir,
+    destination,
+    statePath,
+    orgTokenPath,
+  };
 });
 
 import fs from 'fs';
@@ -66,6 +81,12 @@ function clearAllSources(): void {
       }
     }
   }
+  if (fs.existsSync(dirs.statePath)) {
+    fs.rmSync(dirs.statePath, { force: true });
+  }
+  if (fs.existsSync(dirs.orgTokenPath)) {
+    fs.rmSync(dirs.orgTokenPath, { force: true });
+  }
 }
 
 describe('syncSkills', () => {
@@ -74,6 +95,7 @@ describe('syncSkills', () => {
     fs.mkdirSync(dirs.orgDir, { recursive: true });
     fs.mkdirSync(dirs.userDir, { recursive: true });
     fs.mkdirSync(dirs.destination, { recursive: true });
+    fs.mkdirSync(path.dirname(dirs.statePath), { recursive: true });
   });
 
   afterAll(() => {
@@ -150,7 +172,8 @@ describe('syncSkills', () => {
     expect(listEffective()).toContain('runtime-created');
 
     // Reload should persist the runtime skill to userDir and keep it.
-    syncSkills();
+    // Force path is used by /admin/reload-skills and must preserve runtime skills.
+    syncSkills(true);
     expect(listEffective()).toContain('alpha');
     expect(listEffective()).toContain('runtime-created');
     // Verify it was copied to the persistent user skills directory.
@@ -163,7 +186,7 @@ describe('syncSkills', () => {
     clearAllSources();
     createSkill(dirs.builtInDir, 'builtin-skill');
     createSkill(dirs.orgDir, 'org-skill');
-    syncSkills();
+    syncSkills(true);
 
     // Inject skills with same names as managed sources into destination.
     // These should NOT be persisted (they are managed copies, not runtime-created).
@@ -210,6 +233,48 @@ describe('syncSkills', () => {
     const after = fs.statSync(destinationSkill).mtimeMs;
 
     expect(after).toBe(before);
+    expect(fs.existsSync(dirs.statePath)).toBe(true);
+  });
+
+  it('uses external org token to control skip/full sync decisions', () => {
+    clearAllSources();
+    createSkill(dirs.orgDir, 'org-tokened', '# v1\n');
+    fs.writeFileSync(dirs.orgTokenPath, 'token-v1');
+    syncSkills();
+
+    // Change org content without token bump: should be skipped by state/token.
+    createSkill(dirs.orgDir, 'org-tokened', '# v2\n');
+    syncSkills();
+    let content = fs.readFileSync(
+      path.join(dirs.destination, 'org-tokened', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(content).toBe('# v1\n');
+
+    // Bump token: should trigger full sync and apply new content.
+    fs.writeFileSync(dirs.orgTokenPath, 'token-v2');
+    syncSkills();
+    content = fs.readFileSync(
+      path.join(dirs.destination, 'org-tokened', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(content).toBe('# v2\n');
+  });
+
+  it('force sync bypasses unchanged state', () => {
+    clearAllSources();
+    createSkill(dirs.orgDir, 'org-force', '# v1\n');
+    fs.writeFileSync(dirs.orgTokenPath, 'token-const');
+    syncSkills();
+
+    createSkill(dirs.orgDir, 'org-force', '# v2\n');
+    syncSkills(true);
+
+    const content = fs.readFileSync(
+      path.join(dirs.destination, 'org-force', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(content).toBe('# v2\n');
   });
 
   it('performs incremental updates without rewriting unchanged skills', () => {

@@ -7,11 +7,34 @@ import { logger } from './logger.js';
 
 /** User skills directory: always under MEMORY_DIR for volume consolidation. */
 const USER_SKILLS_DIR = path.join(MEMORY_DIR, 'skills');
+const PICOCLAW_META_DIR = path.join(MEMORY_DIR, '.picoclaw');
+const SKILLS_SYNC_STATE_PATH = path.join(
+  PICOCLAW_META_DIR,
+  'skills-sync-state.json',
+);
+const ORG_SKILLS_TOKEN_FILE = '.picoclaw-skills-token';
 
 interface SkillEntry {
   name: string;
   sourcePath: string;
   signature: string;
+}
+
+interface SourceFingerprint {
+  path: string;
+  kind: 'snapshot' | 'external-token';
+  token: string;
+}
+
+interface SkillSyncState {
+  version: 1;
+  updatedAt: string;
+  destination: { path: string };
+  sources: {
+    builtIn: SourceFingerprint;
+    org: SourceFingerprint;
+    user: SourceFingerprint;
+  };
 }
 
 function listSkillEntries(sourceDir: string): SkillEntry[] {
@@ -112,6 +135,110 @@ function mapsEqualBySignature(
   return true;
 }
 
+function fingerprintSnapshot(sourceDir: string): SourceFingerprint {
+  if (!fs.existsSync(sourceDir)) {
+    return { path: sourceDir, kind: 'snapshot', token: 'missing' };
+  }
+  let fileCount = 0;
+  let totalSkillMdSize = 0;
+  let newestMtimeMs = 0;
+
+  const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    fileCount++;
+    const skillMdPath = path.join(sourceDir, entry.name, 'SKILL.md');
+    if (!fs.existsSync(skillMdPath)) continue;
+    const stat = fs.statSync(skillMdPath);
+    totalSkillMdSize += stat.size;
+    const mtime = Math.floor(stat.mtimeMs);
+    if (mtime > newestMtimeMs) newestMtimeMs = mtime;
+  }
+
+  return {
+    path: sourceDir,
+    kind: 'snapshot',
+    token: `${fileCount}:${totalSkillMdSize}:${newestMtimeMs}`,
+  };
+}
+
+function fingerprintOrgSource(sourceDir: string): SourceFingerprint {
+  const tokenPath = path.join(sourceDir, ORG_SKILLS_TOKEN_FILE);
+  if (!fs.existsSync(sourceDir)) {
+    return { path: sourceDir, kind: 'snapshot', token: 'missing' };
+  }
+  if (!fs.existsSync(tokenPath)) {
+    logger.warn(
+      { tokenPath },
+      'Org skills token file not found; falling back to snapshot fingerprint',
+    );
+    return fingerprintSnapshot(sourceDir);
+  }
+  const token = fs.readFileSync(tokenPath, 'utf-8').trim();
+  return {
+    path: sourceDir,
+    kind: 'external-token',
+    token: token || '(empty)',
+  };
+}
+
+function buildCurrentState(destination: string): SkillSyncState {
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    destination: { path: destination },
+    sources: {
+      builtIn: fingerprintSnapshot(BUILT_IN_SKILLS_DIR),
+      org: fingerprintOrgSource(SKILLS_DIR),
+      user: fingerprintSnapshot(USER_SKILLS_DIR),
+    },
+  };
+}
+
+function readSyncState(): SkillSyncState | null {
+  if (!fs.existsSync(SKILLS_SYNC_STATE_PATH)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(SKILLS_SYNC_STATE_PATH, 'utf-8'),
+    ) as SkillSyncState;
+    if (parsed?.version !== 1 || !parsed.sources || !parsed.destination) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    logger.warn(
+      { statePath: SKILLS_SYNC_STATE_PATH },
+      'Failed to parse skills sync state; falling back to full sync',
+    );
+    return null;
+  }
+}
+
+function writeSyncState(state: SkillSyncState): void {
+  fs.mkdirSync(PICOCLAW_META_DIR, { recursive: true });
+  fs.writeFileSync(SKILLS_SYNC_STATE_PATH, JSON.stringify(state, null, 2));
+}
+
+function fingerprintsMatch(
+  previous: SkillSyncState,
+  current: SkillSyncState,
+): boolean {
+  return (
+    previous.destination.path === current.destination.path &&
+    previous.sources.builtIn.path === current.sources.builtIn.path &&
+    previous.sources.builtIn.kind === current.sources.builtIn.kind &&
+    previous.sources.builtIn.token === current.sources.builtIn.token &&
+    previous.sources.org.path === current.sources.org.path &&
+    previous.sources.org.kind === current.sources.org.kind &&
+    previous.sources.org.token === current.sources.org.token &&
+    previous.sources.user.path === current.sources.user.path &&
+    previous.sources.user.kind === current.sources.user.kind &&
+    previous.sources.user.token === current.sources.user.token
+  );
+}
+
 /**
  * Collect the names of all skills that come from the three managed sources
  * (built-in, org, user). Used to identify runtime-created skills that are
@@ -172,9 +299,25 @@ function persistRuntimeSkills(destination: string): number {
  *   2. SKILLS_DIR (org skills — authoritative, overrides built-in)
  *   3. USER_SKILLS_DIR (user skills — additive only, does NOT override org or built-in)
  */
-export function syncSkills(): void {
+export function syncSkills(force = false): void {
   const destination = path.join(MEMORY_DIR, '.claude', 'skills');
   fs.mkdirSync(destination, { recursive: true });
+
+  const currentState = buildCurrentState(destination);
+  if (!force && fs.existsSync(destination)) {
+    const previousState = readSyncState();
+    if (previousState && fingerprintsMatch(previousState, currentState)) {
+      logger.info(
+        {
+          statePath: SKILLS_SYNC_STATE_PATH,
+          skipped: true,
+          force,
+        },
+        'Skills sync skipped (state unchanged)',
+      );
+      return;
+    }
+  }
 
   // Persist runtime-created skills before clearing.
   const persistedCount = persistRuntimeSkills(destination);
@@ -211,6 +354,7 @@ export function syncSkills(): void {
       },
       'Skills synced to .claude/skills/',
     );
+    writeSyncState(buildCurrentState(destination));
     return;
   }
 
@@ -245,6 +389,8 @@ export function syncSkills(): void {
     },
     'Skills synced to .claude/skills/',
   );
+
+  writeSyncState(buildCurrentState(destination));
 }
 
 export function getSkillsSummary(): {

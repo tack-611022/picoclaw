@@ -2,8 +2,9 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { DB_SYNC_DEBOUNCE_MS } from './config.js';
 import {
   _resetDatabaseForTests,
   cleanupStaleData,
@@ -17,6 +18,7 @@ import {
   logTaskRun,
   createTask,
   queueOutboundMessage,
+  requestDatabaseSync,
   storeConversationMessage,
   getPromptMessages,
   syncDatabaseToVolume,
@@ -36,6 +38,7 @@ function createTempPaths(): {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   closeDatabase();
   _resetDatabaseForTests();
 });
@@ -100,6 +103,36 @@ describe('db', () => {
     syncDatabaseToVolume();
 
     expect(fs.existsSync(paths.persistentPath)).toBe(true);
+  });
+
+  it('debounces repeated sync requests', () => {
+    vi.useFakeTimers();
+    const paths = createTempPaths();
+    initDatabase({
+      persistentDbPath: paths.persistentPath,
+      localDbPath: paths.localPath,
+      forceReinitialize: true,
+    });
+
+    const copySpy = vi.spyOn(fs, 'copyFileSync');
+    copySpy.mockClear();
+    createConversation('conv-debounce');
+
+    requestDatabaseSync();
+    expect(copySpy).toHaveBeenCalledTimes(1);
+
+    requestDatabaseSync();
+    requestDatabaseSync();
+    requestDatabaseSync();
+    expect(copySpy).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(DB_SYNC_DEBOUNCE_MS - 1);
+    expect(copySpy).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(1);
+    expect(copySpy).toHaveBeenCalledTimes(2);
+
+    copySpy.mockRestore();
   });
 
   it('cleans up delivered outbound messages older than 7 days', () => {

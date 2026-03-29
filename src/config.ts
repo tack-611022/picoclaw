@@ -57,6 +57,10 @@ export const TASK_LOG_RETENTION = parseIntWithDefault(
   process.env.TASK_LOG_RETENTION,
   100,
 );
+export const DB_SYNC_DEBOUNCE_MS = parseIntWithDefault(
+  process.env.DB_SYNC_DEBOUNCE_MS,
+  3000,
+);
 
 export const CLAUDE_MODEL = process.env.CLAUDE_MODEL || undefined;
 export const CLAUDE_FALLBACK_MODEL =

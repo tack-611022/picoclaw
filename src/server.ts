@@ -2,7 +2,7 @@ import express, { Express, NextFunction, Request, Response } from 'express';
 
 import { AgentEngine, AgentRunner } from './agent-engine.js';
 import { APP_VERSION, BUILD_COMMIT } from './config.js';
-import { syncDatabaseToVolume } from './db.js';
+import { requestDatabaseSync } from './db.js';
 import { logger } from './logger.js';
 import { authMiddleware } from './middleware/auth.js';
 import { requestIdMiddleware } from './middleware/request-id.js';
@@ -72,11 +72,11 @@ export function createServer(
   // Sync database to persistent volume after each response
   app.use((req: Request, res: Response, next: NextFunction) => {
     res.on('finish', () => {
-      try {
-        syncDatabaseToVolume();
-      } catch (err) {
-        logger.error({ err }, 'Failed to sync database to volume');
+      const isHealthProbe = req.originalUrl === '/health';
+      if (isHealthProbe) {
+        return;
       }
+      requestDatabaseSync();
     });
     next();
   });

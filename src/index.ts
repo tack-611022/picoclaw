@@ -24,7 +24,12 @@ import { createServer } from './server.js';
 import { ensureClaudeSettings, syncSkills } from './skills.js';
 
 function ensureDataDirectories(): void {
-  const directories = [MEMORY_DIR, STORE_DIR, path.join(MEMORY_DIR, '.claude')];
+  const directories = [
+    MEMORY_DIR,
+    STORE_DIR,
+    path.join(MEMORY_DIR, '.claude'),
+    path.join(MEMORY_DIR, '.picoclaw'),
+  ];
 
   for (const directory of directories) {
     fs.mkdirSync(path.resolve(directory), { recursive: true });

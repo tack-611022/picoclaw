@@ -7,7 +7,7 @@ export function adminRoutes(): Router {
   const router = Router();
 
   router.post('/reload-skills', (_req: Request, res: Response) => {
-    syncSkills();
+    syncSkills(true);
     invalidateAgentCache();
     const summary = getSkillsSummary();
     res.json({

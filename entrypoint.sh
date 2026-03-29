@@ -40,73 +40,7 @@ fi
 # picoclaw MCP server and per-request dynamic servers.
 ORG_DIR="${ORG_DIR:-}"
 
-# ── Three-tier skill sync ────────────────────────────────────────
-# Load order: built-in → org (authoritative) → user (additive only)
-SKILLS_DST="${CLAUDE_HOME}/skills"
-BUILTIN_SRC="${BUILT_IN_SKILLS_DIR:-/app/built-in-skills}"
-USER_SKILLS_SRC="${MEMORY_DIR}/skills"
-
-# Resolve org skills source path (needed before persist step).
-if [ -n "${ORG_DIR}" ] && [ -d "${ORG_DIR}/skills" ]; then
-  ORG_SKILLS_SRC="${ORG_DIR}/skills"
-elif [ -n "${SKILLS_DIR:-}" ] && [ -d "${SKILLS_DIR:-}" ]; then
-  ORG_SKILLS_SRC="${SKILLS_DIR}"
-elif [ -d "/data/skills" ]; then
-  ORG_SKILLS_SRC="/data/skills"
-else
-  ORG_SKILLS_SRC=""
-fi
-
-mkdir -p "${SKILLS_DST}" "${USER_SKILLS_SRC}"
-
-# Persist runtime-created skills before clearing the destination.
-# Skills created during chat (e.g. via Claude Code) are written to
-# .claude/skills/ inside MEMORY_DIR and would be lost on restart
-# because the sync clears the destination first.  Copy any skill whose
-# name does NOT exist in a managed source back to the persistent user
-# skills directory so it survives the next sync.
-for skill_dir in "${SKILLS_DST}"/*/; do
-  [ -d "${skill_dir}" ] || continue
-  skill_name="$(basename "${skill_dir}")"
-  # Skip skills from managed sources.
-  [ -d "${BUILTIN_SRC}/${skill_name}" ] && continue
-  [ -n "${ORG_SKILLS_SRC}" ] && [ -d "${ORG_SKILLS_SRC}/${skill_name}" ] && continue
-  [ -d "${USER_SKILLS_SRC}/${skill_name}" ] && continue
-  # Runtime-created — persist to user skills directory.
-  cp -r "${skill_dir}" "${USER_SKILLS_SRC}/${skill_name}"
-done
-
-find "${SKILLS_DST}" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
-
-# 1. Built-in skills (bundled in image)
-if [ -d "${BUILTIN_SRC}" ]; then
-  for dir in "${BUILTIN_SRC}"/*; do
-    if [ -d "${dir}" ]; then
-      cp -r "${dir}" "${SKILLS_DST}/$(basename "${dir}")"
-    fi
-  done
-fi
-
-# 2. Org skills (authoritative — overrides built-in)
-if [ -n "${ORG_SKILLS_SRC}" ]; then
-  for dir in "${ORG_SKILLS_SRC}"/*; do
-    if [ -d "${dir}" ]; then
-      cp -r "${dir}" "${SKILLS_DST}/$(basename "${dir}")"
-    fi
-  done
-fi
-
-# 3. User skills (additive only — skip skills that already exist)
-if [ -d "${USER_SKILLS_SRC}" ]; then
-  for dir in "${USER_SKILLS_SRC}"/*; do
-    if [ -d "${dir}" ]; then
-      skill_name="$(basename "${dir}")"
-      if [ ! -d "${SKILLS_DST}/${skill_name}" ]; then
-        cp -r "${dir}" "${SKILLS_DST}/${skill_name}"
-      fi
-    fi
-  done
-fi
+# Skills sync runs in src/skills.ts during app startup.
 
 # ── Auto-memory symlink ─────────────────────────────────────────
 # Link Claude Code auto-memory directory to the actual memory volume.

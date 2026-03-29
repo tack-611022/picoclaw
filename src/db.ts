@@ -3,11 +3,13 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  DB_SYNC_DEBOUNCE_MS,
   LOCAL_DB_PATH,
   OUTBOUND_TTL_DAYS,
   STORE_DIR,
   TASK_LOG_RETENTION,
 } from './config.js';
+import { logger } from './logger.js';
 import { createPerfTrace } from './perf.js';
 import {
   Conversation,
@@ -34,6 +36,10 @@ let dbPaths: DatabasePaths = {
   persistentDbPath: path.join(STORE_DIR, 'messages.db'),
   localDbPath: LOCAL_DB_PATH,
 };
+let syncTimer: NodeJS.Timeout | null = null;
+let pendingSync = false;
+let syncing = false;
+let lastSyncAt = 0;
 
 function createSchema(database: Database.Database): void {
   database.exec(`
@@ -216,6 +222,49 @@ export function syncDatabaseToVolume(): void {
   perf.mark('fileCopy');
 
   perf.flush('[PERF:DB] sync to volume complete');
+  lastSyncAt = Date.now();
+}
+
+function scheduleDebouncedSync(waitMs: number): void {
+  if (syncTimer || waitMs <= 0) {
+    return;
+  }
+  syncTimer = setTimeout(() => {
+    syncTimer = null;
+    flushPendingDatabaseSync();
+  }, waitMs);
+}
+
+function flushPendingDatabaseSync(): void {
+  if (!db || syncing || !pendingSync) {
+    return;
+  }
+  syncing = true;
+  pendingSync = false;
+  try {
+    syncDatabaseToVolume();
+  } catch (err) {
+    logger.error({ err }, 'Failed to sync database to volume');
+  } finally {
+    syncing = false;
+    if (pendingSync) {
+      scheduleDebouncedSync(DB_SYNC_DEBOUNCE_MS);
+    }
+  }
+}
+
+export function requestDatabaseSync(): void {
+  if (!db) return;
+  pendingSync = true;
+  if (syncing) {
+    return;
+  }
+  const elapsed = Date.now() - lastSyncAt;
+  if (elapsed >= DB_SYNC_DEBOUNCE_MS) {
+    flushPendingDatabaseSync();
+    return;
+  }
+  scheduleDebouncedSync(DB_SYNC_DEBOUNCE_MS - elapsed);
 }
 
 export interface DatabaseHealth {
@@ -240,6 +289,13 @@ export function getDatabaseHealth(): DatabaseHealth {
 }
 
 export function closeDatabase(): void {
+  if (syncTimer) {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+  }
+  pendingSync = false;
+  syncing = false;
+  lastSyncAt = 0;
   if (!db) return;
   db.close();
   db = null;
