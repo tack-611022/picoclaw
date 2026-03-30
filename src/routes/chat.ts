@@ -54,6 +54,9 @@ interface ChatRequestBody {
   mcp_context?: Record<string, unknown>;
 }
 
+const EMPTY_RESULT_FALLBACK_TEXT =
+  '抱歉，我刚刚没有生成有效回复，请稍后重试。';
+
 function getExecutionTimeout(ms?: number): number {
   if (!ms || !Number.isFinite(ms) || ms <= 0) {
     return MAX_EXECUTION_MS;
@@ -306,19 +309,33 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
         };
 
         const output = await agentEngine.run(runInput, streamCallbacks);
-        const finalResult = formatOutbound(
-          output.result || chunkBuffer.join('').trim(),
-        );
+        const rawResult = output.result || chunkBuffer.join('').trim();
+        let finalResult = formatOutbound(rawResult);
+        const emptyResultFallback = !finalResult;
+        if (emptyResultFallback) {
+          finalResult = EMPTY_RESULT_FALLBACK_TEXT;
+        }
         return {
           output,
           finalResult,
+          emptyResultFallback,
           chunkCount: chunkBuffer.length,
         };
       };
 
       const runResult = await runOnce();
 
-      const { output, finalResult } = runResult;
+      const { output, finalResult, emptyResultFallback } = runResult;
+      if (emptyResultFallback) {
+        logger.warn(
+          {
+            requestId: req.requestId,
+            conversationId,
+            status: output.status,
+          },
+          'Chat result is empty, applying fallback text',
+        );
+      }
 
       let assistantMessageId: string | null = null;
       if (finalResult) {
@@ -355,6 +372,7 @@ export function chatRoutes(agentEngine: AgentRunner): Router {
         conversation_id: conversationId,
         message_id: assistantMessageId || userMessageId,
         result: finalResult,
+        empty_result_fallback: emptyResultFallback,
         model: output.model,
         session_id: output.newSessionId || conversation.session_id,
         duration_ms: durationMs,

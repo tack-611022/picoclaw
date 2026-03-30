@@ -735,6 +735,7 @@ export class AgentEngine implements AgentRunner {
     let lastAssistantUuid: string | undefined;
     let actualModel: string | undefined;
     let lastResult: string | null = null;
+    let assistantTextFallback = '';
     let lastStreamedLength = 0;
     let usage: AgentUsage | undefined;
     let contextWarnings: string[] = [];
@@ -1076,6 +1077,16 @@ export class AgentEngine implements AgentRunner {
           if (message.uuid) {
             lastAssistantUuid = message.uuid;
           }
+          if (message.message?.content) {
+            const contentBlocks = message.message.content as Array<{
+              type?: string;
+              text?: unknown;
+            }>;
+            const fallbackText = extractAssistantTextFromBlocks(contentBlocks);
+            if (fallbackText) {
+              assistantTextFallback = fallbackText;
+            }
+          }
           if (input.showToolUse && onToolUse && message.message?.content) {
             const contentBlocks = message.message.content as Array<{
               type?: string;
@@ -1142,7 +1153,7 @@ export class AgentEngine implements AgentRunner {
 
       return {
         status: 'success',
-        result: lastResult,
+        result: lastResult || assistantTextFallback || null,
         newSessionId,
         lastAssistantUuid,
         model: actualModel,
@@ -1167,7 +1178,7 @@ export class AgentEngine implements AgentRunner {
         });
         return {
           status: 'timeout',
-          result: lastResult,
+          result: lastResult || assistantTextFallback || null,
           newSessionId,
           lastAssistantUuid,
           model: actualModel,
@@ -1187,7 +1198,7 @@ export class AgentEngine implements AgentRunner {
       });
       return {
         status: 'error',
-        result: lastResult,
+        result: lastResult || assistantTextFallback || null,
         newSessionId,
         lastAssistantUuid,
         model: actualModel,
@@ -1199,4 +1210,23 @@ export class AgentEngine implements AgentRunner {
       clearTimeout(timeoutHandle);
     }
   }
+}
+
+function extractAssistantTextFromBlocks(
+  blocks: Array<{ type?: string; text?: unknown }>,
+): string {
+  if (!Array.isArray(blocks) || blocks.length === 0) {
+    return '';
+  }
+  const parts: string[] = [];
+  for (const block of blocks) {
+    if (block?.type !== 'text') {
+      continue;
+    }
+    const text = typeof block.text === 'string' ? block.text : '';
+    if (text.trim()) {
+      parts.push(text);
+    }
+  }
+  return parts.join('').trim();
 }
