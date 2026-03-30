@@ -980,6 +980,7 @@ export class AgentEngine implements AgentRunner {
                 }
               : undefined,
           allowedTools,
+          maxTurns: 2,
           includePartialMessages: true,
           maxThinkingTokens: input.maxThinkingTokens,
           env: sdkEnv,
