@@ -54,8 +54,7 @@ interface ChatRequestBody {
   mcp_context?: Record<string, unknown>;
 }
 
-const EMPTY_RESULT_FALLBACK_TEXT =
-  '抱歉，我刚刚没有生成有效回复，请稍后重试。';
+const EMPTY_RESULT_FALLBACK_TEXT = '抱歉，我刚刚没有生成有效回复，请稍后重试。';
 
 function getExecutionTimeout(ms?: number): number {
   if (!ms || !Number.isFinite(ms) || ms <= 0) {
